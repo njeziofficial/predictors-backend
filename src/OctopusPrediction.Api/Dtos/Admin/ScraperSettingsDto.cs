@@ -1,0 +1,12 @@
+namespace OctopusPrediction.Api.Dtos.Admin;
+
+public record ScraperSettingsDto(
+    bool Enabled,
+    int PollIntervalSeconds,
+    string Competition,
+    string SourceName,
+    IReadOnlyList<string> AvailableSources,
+    bool PredictionsLocked,
+    bool ReminderEnabled,
+    int ReminderHoursBeforeFirstGame
+);
