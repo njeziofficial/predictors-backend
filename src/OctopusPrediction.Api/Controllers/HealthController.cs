@@ -59,7 +59,7 @@ public class HealthController(AppDbContext db, ILogger<HealthController> logger)
         {
             var canConnect = await db.Database.CanConnectAsync();
             return canConnect
-                ? Ok(new { database = "connected", connectionString = db.Database.GetConnectionString() })
+                ? Ok(new { database = "connected" })
                 : StatusCode(503, new { database = "disconnected" });
         }
         catch (Exception ex)

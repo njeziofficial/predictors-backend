@@ -1,4 +1,5 @@
-version: '3.8'
+# Project name matches the existing containers/volume so `docker compose up -d` reuses them.
+name: backend
 
 services:
   postgres:
@@ -27,15 +28,27 @@ services:
     ports:
       - "5000:8080"
     environment:
-      - ConnectionStrings__DefaultConnection=Host=postgres;Port=5432;Database=octopus_prediction;Username=octopus;Password=octopus123
+      # Supabase session-pooler connection string, from the gitignored .env next to this file.
+      - ConnectionStrings__DefaultConnection=${SUPABASE_DB_CONNECTION:?Set SUPABASE_DB_CONNECTION in .env}
       - Jwt__Key=octopus-prediction-super-secret-jwt-key-change-in-production-32chars
       - Jwt__Issuer=OctopusPrediction
       - Jwt__Audience=OctopusPrediction
       - Jwt__ExpiryMinutes=10080
       - ASPNETCORE_ENVIRONMENT=Production
+    restart: unless-stopped
+
+  # Public HTTPS tunnel to the API so the Cloudflare-hosted frontend's Worker can reach it.
+  # NGROK_AUTHTOKEN and NGROK_DOMAIN come from the gitignored .env next to this file.
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: octopus_ngrok
+    command: ["http", "api:8080", "--url=${NGROK_DOMAIN}"]
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - api
     restart: unless-stopped
 
   adminer:
