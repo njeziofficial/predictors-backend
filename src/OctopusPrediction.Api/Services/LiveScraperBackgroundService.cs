@@ -53,13 +53,15 @@ internal class LiveScraperBackgroundService(
                 continue;
             }
 
-            await EnsureChromiumReadyAsync();
-            logger.LogInformation("[LiveScraper] Polling {Source} every {Interval}s",
-                settings.SourceName, settings.PollIntervalSeconds);
-
             IBrowser? browser = null;
             try
             {
+                // Inside the try: a failed Chromium download (e.g. a network blip at startup) must
+                // only skip this attempt. Escaping ExecuteAsync would stop the whole host.
+                await EnsureChromiumReadyAsync();
+                logger.LogInformation("[LiveScraper] Polling {Source} every {Interval}s",
+                    settings.SourceName, settings.PollIntervalSeconds);
+
                 browser = await Puppeteer.LaunchAsync(_browserOpts);
 
                 while (!ct.IsCancellationRequested)
@@ -91,7 +93,7 @@ internal class LiveScraperBackgroundService(
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                logger.LogError(ex, "[LiveScraper] Browser launch failed");
+                logger.LogError(ex, "[LiveScraper] Browser download or launch failed — retrying");
             }
             finally
             {
