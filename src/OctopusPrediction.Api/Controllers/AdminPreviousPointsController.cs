@@ -19,24 +19,29 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
 {
     private static readonly EmailAddressAttribute EmailValidator = new();
 
+    // A prefix match ("Anony" → "Anonymous") needs at least this many characters, so short
+    // names can't land on the wrong account.
+    private const int MinPrefixLength = 4;
+
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
         var entries = await db.PreviousPoints
             .Include(pp => pp.User)
             .OrderByDescending(pp => pp.Points)
+            .ThenByDescending(pp => pp.CorrectScores)
             .ThenBy(pp => pp.User.Name)
             .ToListAsync();
 
         return Ok(entries.Select(pp => new PreviousPointsEntryDto(
             pp.Id.ToString(), pp.UserId.ToString(), pp.User.Name, pp.User.Email,
-            pp.Points, pp.Label, pp.CreatedAt, pp.UpdatedAt)));
+            pp.Points, pp.CorrectScores, pp.Label, pp.CreatedAt, pp.UpdatedAt)));
     }
 
     // All-or-nothing: if any row has an error, nothing is saved (even when DryRun is false), so a
     // half-imported file can't leave the leaderboard in a mixed state. Re-importing the same label
     // replaces each user's points for that label rather than adding to them, so it's safe to re-run
-    // a corrected file.
+    // a corrected file — e.g. each week's league table under one label.
     [HttpPost("import")]
     public async Task<IActionResult> Import(PreviousPointsImportRequest request)
     {
@@ -49,59 +54,104 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
         if (label.Length == 0)
             return BadRequest(new { message = "A label is required." });
 
-        var emails = request.Rows
-            .Select(r => (r.Email ?? "").Trim().ToLower())
-            .Where(e => e.Length > 0)
-            .Distinct()
-            .ToList();
+        // League tables are small; loading everyone keeps WhatsApp-name matching simple.
+        var users = await db.Users.ToListAsync();
+        var usersByEmail = users.ToDictionary(u => u.Email);
+        var aliases = await db.PlayerAliases.ToDictionaryAsync(a => a.Key);
 
-        var usersByEmail = await db.Users
-            .Where(u => emails.Contains(u.Email))
-            .ToDictionaryAsync(u => u.Email);
-
-        var userIds = usersByEmail.Values.Select(u => u.Id).ToList();
         var existingByUser = await db.PreviousPoints
-            .Where(pp => pp.Label == label && userIds.Contains(pp.UserId))
+            .Where(pp => pp.Label == label)
             .ToDictionaryAsync(pp => pp.UserId);
 
         var results = new List<PreviousPointsImportRowResult>();
-        var seen = new HashSet<string>();
+        var matchedUsers = new List<User?>();
+        var seenEmails = new HashSet<string>();
+        var seenUsers = new HashSet<Guid>();
 
         for (var i = 0; i < request.Rows.Count; i++)
         {
             var row = request.Rows[i];
             var email = (row.Email ?? "").Trim().ToLower();
             var name = string.IsNullOrWhiteSpace(row.Name) ? null : row.Name.Trim();
+            var whatsApp = string.IsNullOrWhiteSpace(row.WhatsAppName) ? null : row.WhatsAppName.Trim();
+            User? user = null;
+            string? matchedBy = null;
 
-            PreviousPointsImportRowResult Result(string action, int? current = null, string? error = null) =>
-                new(i + 1, email, name, row.Points, action, current, error);
-
-            if (email.Length == 0 || !EmailValidator.IsValid(email))
+            PreviousPointsImportRowResult Result(string action, string? error = null)
             {
-                results.Add(Result("error", error: "Invalid email address."));
-                continue;
-            }
-            if (!seen.Add(email))
-            {
-                results.Add(Result("error", error: "This email appears more than once in the file."));
-                continue;
+                existingByUser.TryGetValue(user?.Id ?? Guid.Empty, out var existing);
+                return new(i + 1, user?.Email ?? email, user?.Name ?? name, whatsApp, row.Points,
+                    row.CorrectScores ?? existing?.CorrectScores ?? 0, action,
+                    existing?.Points, existing?.CorrectScores, matchedBy, error);
             }
 
-            if (usersByEmail.TryGetValue(email, out var user))
+            void Add(PreviousPointsImportRowResult result)
             {
-                // Show the account's actual name, not whatever the file had.
-                name = user.Name;
-                results.Add(existingByUser.TryGetValue(user.Id, out var existing)
-                    ? Result(existing.Points == row.Points ? "unchanged" : "update", existing.Points)
+                results.Add(result);
+                matchedUsers.Add(result.Action is "error" or "skipped" ? null : user);
+            }
+
+            if (row.CorrectScores < 0)
+            {
+                Add(Result("error", "Correct scores can't be negative."));
+                continue;
+            }
+
+            if (email.Length > 0)
+            {
+                if (!EmailValidator.IsValid(email))
+                {
+                    Add(Result("error", "Invalid email address."));
+                    continue;
+                }
+                if (!seenEmails.Add(email))
+                {
+                    Add(Result("error", "This email appears more than once in the file."));
+                    continue;
+                }
+                if (usersByEmail.TryGetValue(email, out user)) matchedBy = "email";
+            }
+            else if (whatsApp is not null)
+            {
+                var (match, by, error) = MatchByName(whatsApp, users, aliases);
+                if (error is not null)
+                {
+                    Add(Result("error", error));
+                    continue;
+                }
+                if (match is null)
+                {
+                    Add(Result("skipped", "No account with this WhatsApp name — add an email column to create one."));
+                    continue;
+                }
+                (user, matchedBy) = (match, by);
+            }
+            else
+            {
+                Add(Result("error", "Each row needs an email or a WhatsApp name."));
+                continue;
+            }
+
+            if (user is not null)
+            {
+                if (!seenUsers.Add(user.Id))
+                {
+                    Add(Result("error", $"{user.Name} is matched by more than one row in the file."));
+                    continue;
+                }
+                Add(existingByUser.TryGetValue(user.Id, out var existing)
+                    ? Result(existing.Points == row.Points
+                             && existing.CorrectScores == (row.CorrectScores ?? existing.CorrectScores)
+                        ? "unchanged" : "update")
                     : Result("add"));
             }
             else if (name is null || name.Length < 2)
             {
-                results.Add(Result("error", error: "No account with this email. Add a name (2+ characters) to create one."));
+                Add(Result("error", "No account with this email. Add a name (2+ characters) to create one."));
             }
             else
             {
-                results.Add(Result("create_user"));
+                Add(Result("create_user"));
             }
         }
 
@@ -116,34 +166,40 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
         {
             var row = request.Rows[i];
             var result = results[i];
-            if (result.Action == "unchanged") continue;
+            var user = matchedUsers[i];
+
+            // A row with both an email and a WhatsApp name links that name to the account, so
+            // next time the name alone finds it (e.g. "FiskySo" → Big Fisky's email).
+            if (result.MatchedBy == "email" && result.WhatsAppName is not null)
+                RememberAlias(result.WhatsAppName, user!, aliases, now);
+
+            if (result.Action is "unchanged" or "skipped") continue;
 
             if (result.Action == "create_user")
             {
                 var password = AdminUsersController.GenerateTemporaryPassword();
-                var newUser = new User
+                user = new User
                 {
                     Id = Guid.NewGuid(),
                     Name = result.Name!,
                     Email = result.Email,
                     PhoneNumber = string.IsNullOrWhiteSpace(row.PhoneNumber) ? null : row.PhoneNumber.Trim(),
-                    WhatsAppName = string.IsNullOrWhiteSpace(row.WhatsAppName) ? null : row.WhatsAppName.Trim(),
+                    WhatsAppName = result.WhatsAppName,
                     PasswordHash = BCrypt.Net.BCrypt.HashPassword(password),
                     Role = UserRole.User,
                     MustResetPassword = true,
                     CreatedAt = now
                 };
-                db.Users.Add(newUser);
-                usersByEmail[newUser.Email] = newUser;
-                created.Add(new CreatedAccountDto(newUser.Name, newUser.Email, password));
-                AuditLogger.Log(db, subject: newUser, actor: actor, action: "UserCreated",
-                    details: $"Email: {newUser.Email}, Role: User (previous points import)");
+                db.Users.Add(user);
+                created.Add(new CreatedAccountDto(user.Name, user.Email, password));
+                AuditLogger.Log(db, subject: user, actor: actor, action: "UserCreated",
+                    details: $"Email: {user.Email}, Role: User (previous points import)");
             }
 
-            var user = usersByEmail[result.Email];
-            if (existingByUser.TryGetValue(user.Id, out var existing))
+            if (existingByUser.TryGetValue(user!.Id, out var existing))
             {
                 existing.Points = row.Points;
+                existing.CorrectScores = result.CorrectScores;
                 existing.UpdatedAt = now;
             }
             else
@@ -152,6 +208,7 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
                 {
                     UserId = user.Id,
                     Points = row.Points,
+                    CorrectScores = result.CorrectScores,
                     Label = label,
                     CreatedByUserId = actor.Id,
                     CreatedAt = now,
@@ -160,8 +217,9 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
             }
 
             AuditLogger.Log(db, subject: user, actor: actor, action: "PreviousPointsImported",
-                field: "Previous Points", previousValue: result.CurrentPoints?.ToString() ?? "—",
-                newValue: row.Points.ToString(), details: $"Label: {label}");
+                field: "Previous Points",
+                previousValue: result.CurrentPoints is null ? "—" : $"{result.CurrentPoints} ({result.CurrentCorrectScores} CS)",
+                newValue: $"{row.Points} ({result.CorrectScores} CS)", details: $"Label: {label}");
         }
 
         await db.SaveChangesAsync();
@@ -187,6 +245,70 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
         await db.SaveChangesAsync();
         return Ok(new { message = "Previous points removed." });
     }
+
+    // Finds the account a league-table name refers to. Names are compared ignoring case, spaces,
+    // apostrophes and other punctuation ("God’s O" = "Gods O"). Tries, in order, stopping at the
+    // first step with any match: a name an admin linked earlier (PlayerAlias), exact WhatsApp
+    // name, exact account name, then a unique prefix either way round on either name
+    // ("Anony" ↔ "Anonymous"). More than one match at a step is an error rather than a guess; no
+    // match at all returns (null, null, null).
+    private static (User? User, string? MatchedBy, string? Error) MatchByName(
+        string name, List<User> users, Dictionary<string, PlayerAlias> aliases)
+    {
+        var key = NormalizeName(name);
+        if (key.Length == 0) return (null, null, "WhatsApp name has no letters or digits.");
+
+        if (aliases.TryGetValue(key, out var alias))
+        {
+            var linked = users.FirstOrDefault(u => u.Id == alias.UserId);
+            if (linked is not null) return (linked, "alias", null);
+        }
+
+        var steps = new (string By, Func<User, bool> Matches)[]
+        {
+            ("whatsapp", u => NormalizeName(u.WhatsAppName) == key),
+            ("name", u => NormalizeName(u.Name) == key),
+            ("whatsapp", u => IsPrefixMatch(key, NormalizeName(u.WhatsAppName))),
+            ("name", u => IsPrefixMatch(key, NormalizeName(u.Name))),
+        };
+
+        foreach (var (by, matches) in steps)
+        {
+            var found = users.Where(matches).ToList();
+            if (found.Count == 1) return (found[0], by, null);
+            if (found.Count > 1)
+                return (null, null,
+                    $"\"{name}\" matches several accounts ({string.Join(", ", found.Select(u => u.Name))}) — use an email.");
+        }
+        return (null, null, null);
+    }
+
+    // Saves (or repoints) name → user unless the name already finds that user on its own.
+    private void RememberAlias(string name, User user, Dictionary<string, PlayerAlias> aliases, DateTime now)
+    {
+        var key = NormalizeName(name);
+        if (key.Length == 0 || key == NormalizeName(user.WhatsAppName) || key == NormalizeName(user.Name)) return;
+
+        if (aliases.TryGetValue(key, out var existing))
+        {
+            if (existing.UserId == user.Id) return;
+            existing.UserId = user.Id;
+            existing.Alias = name;
+        }
+        else
+        {
+            var alias = new PlayerAlias { Key = key, Alias = name, UserId = user.Id, CreatedAt = now };
+            db.PlayerAliases.Add(alias);
+            aliases[key] = alias;
+        }
+    }
+
+    private static bool IsPrefixMatch(string a, string b) =>
+        a.Length > 0 && b.Length > 0 && Math.Min(a.Length, b.Length) >= MinPrefixLength
+        && (a.StartsWith(b, StringComparison.Ordinal) || b.StartsWith(a, StringComparison.Ordinal));
+
+    private static string NormalizeName(string? name) =>
+        new((name ?? "").Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
 
     private Task<User?> GetCurrentAdminAsync()
     {

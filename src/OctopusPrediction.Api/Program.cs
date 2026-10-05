@@ -204,6 +204,19 @@ try
             """);
         await db.Database.ExecuteSqlRawAsync(
             "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PreviousPoints_UserId_Label\" ON \"PreviousPoints\" (\"UserId\", \"Label\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"PreviousPoints\" ADD COLUMN IF NOT EXISTS \"CorrectScores\" integer NOT NULL DEFAULT 0;");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PlayerAliases" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "Key" character varying(200) NOT NULL,
+                "Alias" character varying(200) NOT NULL,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "CreatedAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PlayerAliases_Key\" ON \"PlayerAliases\" (\"Key\");");
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "RefreshTokens" (
                 "Id" uuid NOT NULL PRIMARY KEY,

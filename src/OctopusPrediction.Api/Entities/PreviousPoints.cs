@@ -10,6 +10,9 @@ public class PreviousPoints
     public Guid UserId { get; set; }
     public User User { get; set; } = null!;
     public int Points { get; set; }
+    // Exact scores the user called in that period. Counted with in-app correct scores to break
+    // ties on the overall leaderboard.
+    public int CorrectScores { get; set; }
     public string Label { get; set; } = string.Empty;
     public Guid? CreatedByUserId { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

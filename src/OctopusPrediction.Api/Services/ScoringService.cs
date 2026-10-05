@@ -6,12 +6,16 @@ namespace OctopusPrediction.Api.Services;
 
 public class ScoringService(AppDbContext db) : IScoringService
 {
+    // Only an exact score earns this much (the best directional result, a draw, is 5), so
+    // PointsEarned == CorrectScorePoints identifies a correct-score hit.
+    public const int CorrectScorePoints = 10;
+
     private static readonly Dictionary<OutcomeType, int> Points = new()
     {
         [OutcomeType.HomeWin] = 2,
         [OutcomeType.AwayWin] = 3,
         [OutcomeType.Draw] = 5,
-        [OutcomeType.CorrectScore] = 10,
+        [OutcomeType.CorrectScore] = CorrectScorePoints,
     };
 
     public int ScorePrediction(Prediction prediction, Fixture fixture)

@@ -54,7 +54,7 @@ public class UsersController(AppDbContext db) : ControllerBase
         var entries = await db.PreviousPoints
             .Where(pp => pp.UserId == id)
             .OrderBy(pp => pp.CreatedAt)
-            .Select(pp => new PreviousPointsDto(pp.Label, pp.Points, pp.UpdatedAt))
+            .Select(pp => new PreviousPointsDto(pp.Label, pp.Points, pp.CorrectScores, pp.UpdatedAt))
             .ToListAsync();
         return Ok(entries);
     }

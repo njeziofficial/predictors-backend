@@ -13,6 +13,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<PreviousPoints> PreviousPoints => Set<PreviousPoints>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+    public DbSet<PlayerAlias> PlayerAliases => Set<PlayerAlias>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -104,6 +105,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             pp.HasIndex(x => new { x.UserId, x.Label }).IsUnique();
             pp.HasOne(x => x.User)
               .WithMany(x => x.PreviousPoints)
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<PlayerAlias>(a =>
+        {
+            a.HasKey(x => x.Id);
+            a.Property(x => x.Key).HasMaxLength(200);
+            a.Property(x => x.Alias).HasMaxLength(200);
+            a.HasIndex(x => x.Key).IsUnique();
+            a.HasOne(x => x.User)
+              .WithMany()
               .HasForeignKey(x => x.UserId)
               .OnDelete(DeleteBehavior.Cascade);
         });

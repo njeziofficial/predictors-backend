@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
@@ -15,6 +16,8 @@ namespace OctopusPrediction.Api.Controllers;
 [Authorize(Roles = "Admin")]
 public class AdminUsersController(AppDbContext db) : ControllerBase
 {
+    private static readonly EmailAddressAttribute EmailValidator = new();
+
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
@@ -66,6 +69,63 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
             user = ToDto(user),
             temporaryPassword = generated ? password : null
         });
+    }
+
+    // Editing someone's details is the system user's call only. Only the fields sent are changed.
+    [HttpPut("{id}")]
+    public async Task<IActionResult> UpdateDetails(Guid id, UpdateUserDetailsRequest request)
+    {
+        var actor = await GetCurrentAdminAsync();
+        if (actor?.IsSystemUser != true)
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new { message = "Only the system user can edit user details." });
+
+        var user = await db.Users.FindAsync(id);
+        if (user is null) return NotFound(new { message = "User not found." });
+
+        var name = request.Name?.Trim();
+        if (name is not null && name.Length < 2)
+            return BadRequest(new { message = "Name must be at least 2 characters." });
+        if (name?.Length > 200)
+            return BadRequest(new { message = "Name must be at most 200 characters." });
+
+        var email = request.Email?.Trim().ToLower();
+        if (email is not null && email != user.Email)
+        {
+            if (!EmailValidator.IsValid(email) || email.Length > 256)
+                return BadRequest(new { message = "Invalid email address." });
+            // DbSeeder finds the system user by its configured email, so changing it would get a
+            // second system user seeded on the next restart. Change SeedAdmin:Email instead.
+            if (user.IsSystemUser)
+                return BadRequest(new { message = "The system user's email can only be changed in the server configuration." });
+            if (await db.Users.AnyAsync(u => u.Email == email && u.Id != id))
+                return Conflict(new { message = "Another user already has this email." });
+        }
+
+        // Empty means "clear it"; null means "leave it".
+        string? Optional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        var phone = request.PhoneNumber is null ? user.PhoneNumber : Optional(request.PhoneNumber);
+        var whatsApp = request.WhatsAppName is null ? user.WhatsAppName : Optional(request.WhatsAppName);
+        if (phone?.Length > 30)
+            return BadRequest(new { message = "Phone number must be at most 30 characters." });
+        if (whatsApp?.Length > 200)
+            return BadRequest(new { message = "WhatsApp name must be at most 200 characters." });
+
+        void Change(string field, string? previous, string? next, Action apply)
+        {
+            if (previous == next) return;
+            AuditLogger.Log(db, subject: user, actor: actor, action: "UserDetailsUpdated",
+                field: field, previousValue: previous ?? "—", newValue: next ?? "—");
+            apply();
+        }
+
+        Change("Name", user.Name, name ?? user.Name, () => user.Name = name!);
+        Change("Email", user.Email, email ?? user.Email, () => user.Email = email!);
+        Change("Phone Number", user.PhoneNumber, phone, () => user.PhoneNumber = phone);
+        Change("WhatsApp Name", user.WhatsAppName, whatsApp, () => user.WhatsAppName = whatsApp);
+
+        await db.SaveChangesAsync();
+        return Ok(ToDto(user));
     }
 
     [HttpPut("{id}/role")]
