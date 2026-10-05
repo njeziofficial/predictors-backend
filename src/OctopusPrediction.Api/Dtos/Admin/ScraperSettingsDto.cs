@@ -7,6 +7,7 @@ public record ScraperSettingsDto(
     string SourceName,
     IReadOnlyList<string> AvailableSources,
     bool PredictionsLocked,
+    bool RegistrationClosed,
     bool ReminderEnabled,
     int ReminderHoursBeforeFirstGame
 );

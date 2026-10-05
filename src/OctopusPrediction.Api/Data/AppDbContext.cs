@@ -11,6 +11,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Prediction> Predictions => Set<Prediction>();
     public DbSet<ScraperSettings> ScraperSettings => Set<ScraperSettings>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<PreviousPoints> PreviousPoints => Set<PreviousPoints>();
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -79,6 +81,31 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             a.Property(x => x.NewValue).HasMaxLength(500);
             a.Property(x => x.Details).HasMaxLength(500);
             a.HasIndex(x => x.CreatedAt);
+        });
+
+        mb.Entity<RefreshToken>(t =>
+        {
+            t.HasKey(x => x.Id);
+            t.Property(x => x.TokenHash).HasMaxLength(64);
+            t.Property(x => x.RevokedReason).HasMaxLength(50);
+            t.HasIndex(x => x.TokenHash).IsUnique();
+            t.HasIndex(x => x.UserId);
+            t.HasIndex(x => x.FamilyId);
+            t.HasOne(x => x.User)
+             .WithMany()
+             .HasForeignKey(x => x.UserId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<PreviousPoints>(pp =>
+        {
+            pp.HasKey(x => x.Id);
+            pp.Property(x => x.Label).HasMaxLength(100);
+            pp.HasIndex(x => new { x.UserId, x.Label }).IsUnique();
+            pp.HasOne(x => x.User)
+              .WithMany(x => x.PreviousPoints)
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

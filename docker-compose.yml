@@ -33,7 +33,8 @@ services:
       - Jwt__Key=octopus-prediction-super-secret-jwt-key-change-in-production-32chars
       - Jwt__Issuer=OctopusPrediction
       - Jwt__Audience=OctopusPrediction
-      - Jwt__ExpiryMinutes=10080
+      - Jwt__AccessTokenMinutes=15
+      - Jwt__RefreshTokenDays=30
       - ASPNETCORE_ENVIRONMENT=Production
     restart: unless-stopped
 

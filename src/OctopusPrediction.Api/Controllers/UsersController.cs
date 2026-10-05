@@ -46,6 +46,19 @@ public class UsersController(AppDbContext db) : ControllerBase
         return Ok(ToDto(user));
     }
 
+    // Points carried over from before the app (see PreviousPoints). Usually one row per user.
+    [HttpGet("me/previous-points")]
+    public async Task<IActionResult> GetMyPreviousPoints()
+    {
+        var id = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var entries = await db.PreviousPoints
+            .Where(pp => pp.UserId == id)
+            .OrderBy(pp => pp.CreatedAt)
+            .Select(pp => new PreviousPointsDto(pp.Label, pp.Points, pp.UpdatedAt))
+            .ToListAsync();
+        return Ok(entries);
+    }
+
     [HttpPut("me/password")]
     public async Task<IActionResult> ChangePassword(ChangePasswordRequest request)
     {
@@ -64,6 +77,9 @@ public class UsersController(AppDbContext db) : ControllerBase
         user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
         user.MustResetPassword = false;
         AuditLogger.Log(db, subject: user, actor: user, action: "PasswordChanged");
+        // Sign out every other device, but keep the session making this request alive.
+        Guid? currentSession = Guid.TryParse(User.FindFirstValue(AuthService.SessionIdClaim), out var sid) ? sid : null;
+        await SessionRevoker.RevokeAllAsync(db, user.Id, "password_changed", exceptFamilyId: currentSession);
         await db.SaveChangesAsync();
 
         return Ok(new { message = "Password updated." });

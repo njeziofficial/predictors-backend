@@ -93,8 +93,10 @@ builder.Services.AddSingleton<IReminderMessageSender, TwilioReminderMessageSende
 builder.Services.AddHostedService<ReminderBackgroundService>();
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
-// Auth is a bearer JWT, not cookies, so allowing any origin in Development carries no
-// CSRF/credential risk — it just lets a tunnel (ngrok, etc.) with an unpredictable URL
+// API auth is a bearer JWT. The one cookie (the refresh token) is SameSite=Strict and only
+// ever sent same-origin through the Vite proxy / Cloudflare Worker, and this policy never
+// enables AllowCredentials — so allowing any origin in Development still carries no
+// CSRF/credential risk. It just lets a tunnel (ngrok, etc.) with an unpredictable URL
 // reach the API without editing this allowlist every time. Production stays locked down.
 builder.Services.AddCors(opts =>
     opts.AddDefaultPolicy(policy =>
@@ -184,9 +186,43 @@ try
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"PredictionsLocked\" boolean NOT NULL DEFAULT false;");
         await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"RegistrationClosed\" boolean NOT NULL DEFAULT false;");
+        await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"MustResetPassword\" boolean NOT NULL DEFAULT false;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AuditLogEnabled\" boolean NOT NULL DEFAULT true;");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PreviousPoints" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "Points" integer NOT NULL,
+                "Label" character varying(100) NOT NULL,
+                "CreatedByUserId" uuid NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PreviousPoints_UserId_Label\" ON \"PreviousPoints\" (\"UserId\", \"Label\");");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "RefreshTokens" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "FamilyId" uuid NOT NULL,
+                "TokenHash" character varying(64) NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "ExpiresAt" timestamp with time zone NOT NULL,
+                "RevokedAt" timestamp with time zone NULL,
+                "RevokedReason" character varying(50) NULL,
+                "ReplacedByTokenId" uuid NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_RefreshTokens_TokenHash\" ON \"RefreshTokens\" (\"TokenHash\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_RefreshTokens_UserId\" ON \"RefreshTokens\" (\"UserId\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_RefreshTokens_FamilyId\" ON \"RefreshTokens\" (\"FamilyId\");");
 
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         await DbSeeder.SeedAdminUserAsync(db, builder.Configuration, seedLogger);

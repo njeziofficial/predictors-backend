@@ -20,4 +20,5 @@ public class User
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastLoginAt { get; set; }
     public ICollection<Prediction> Predictions { get; set; } = [];
+    public ICollection<PreviousPoints> PreviousPoints { get; set; } = [];
 }

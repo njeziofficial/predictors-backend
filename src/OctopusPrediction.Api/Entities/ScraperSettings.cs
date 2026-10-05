@@ -8,6 +8,9 @@ public class ScraperSettings
     public string Competition { get; set; } = "La Liga";
     public string SourceName { get; set; } = "Flashscore";
     public bool PredictionsLocked { get; set; } = false;
+    // When true, POST /api/auth/register is refused. Existing accounts can still log in, and the
+    // system user can still create accounts from the admin CMS.
+    public bool RegistrationClosed { get; set; } = false;
     // System-user-only kill switch: when false, AuditLogger.Log is a no-op for everyone —
     // see AuditLogSettings, which caches this in memory so every call site isn't a DB hit.
     public bool AuditLogEnabled { get; set; } = true;

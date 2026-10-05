@@ -22,6 +22,52 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         return Ok(users.Select(ToDto));
     }
 
+    // Creating accounts (of either role) is the system user's call only.
+    [HttpPost]
+    public async Task<IActionResult> Create(CreateUserRequest request)
+    {
+        var actor = await GetCurrentAdminAsync();
+        if (actor?.IsSystemUser != true)
+            return StatusCode(StatusCodes.Status403Forbidden,
+                new { message = "Only the system user can create users." });
+
+        if (!Enum.TryParse<UserRole>(request.Role, true, out var role) || !Enum.IsDefined(role))
+            return BadRequest(new { message = $"Invalid role: {request.Role}" });
+
+        var email = request.Email.Trim().ToLower();
+        if (await db.Users.AnyAsync(u => u.Email == email))
+            return Conflict(new { message = "A user with this email already exists." });
+
+        var generated = string.IsNullOrWhiteSpace(request.Password);
+        var password = generated ? GenerateTemporaryPassword() : request.Password!;
+
+        var user = new User
+        {
+            Id = Guid.NewGuid(),
+            Name = request.Name.Trim(),
+            Email = email,
+            PhoneNumber = request.PhoneNumber,
+            WhatsAppName = request.WhatsAppName,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(password),
+            Role = role,
+            // Same rule as ResetPassword: admins can't change their own password, so only a
+            // User is forced through the reset screen on first login.
+            MustResetPassword = role != UserRole.Admin,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        db.Users.Add(user);
+        AuditLogger.Log(db, subject: user, actor: actor, action: "UserCreated",
+            details: $"Email: {user.Email}, Role: {role}");
+        await db.SaveChangesAsync();
+
+        return CreatedAtAction(nameof(GetAll), null, new
+        {
+            user = ToDto(user),
+            temporaryPassword = generated ? password : null
+        });
+    }
+
     [HttpPut("{id}/role")]
     public async Task<IActionResult> SetRole(Guid id, UpdateUserRoleRequest request)
     {
@@ -79,6 +125,11 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
                 field: "Status", previousValue: previousStatus, newValue: newStatus);
         }
 
+        // DisabledUserMiddleware already blocks their requests; this also ends their sessions so
+        // re-enabling them later doesn't silently revive an old login.
+        if (request.IsDisabled)
+            await SessionRevoker.RevokeAllAsync(db, user.Id, "disabled");
+
         await db.SaveChangesAsync();
         return Ok(ToDto(user));
     }
@@ -109,6 +160,8 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         user.MustResetPassword = user.Role != UserRole.Admin;
 
         AuditLogger.Log(db, subject: user, actor: actor, action: "PasswordReset");
+        // Whoever was logged in with the old password gets signed out everywhere.
+        await SessionRevoker.RevokeAllAsync(db, user.Id, "password_reset");
 
         await db.SaveChangesAsync();
         return Ok(new { temporaryPassword });
@@ -118,7 +171,7 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
     // gets read aloud or typed by a human off a screen when the admin shares it.
     private const string PasswordChars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
 
-    private static string GenerateTemporaryPassword()
+    internal static string GenerateTemporaryPassword()
     {
         var bytes = RandomNumberGenerator.GetBytes(12);
         var chars = new char[12];

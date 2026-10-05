@@ -65,6 +65,26 @@ public class AdminController(
         return Ok(ToDto(settings));
     }
 
+    // Stops new sign-ups through POST /api/auth/register. Existing users are unaffected.
+    [HttpPut("registration")]
+    public async Task<IActionResult> SetRegistrationClosed(SetRegistrationClosedRequest request)
+    {
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var changed = settings.RegistrationClosed != request.Closed;
+        settings.RegistrationClosed = request.Closed;
+
+        if (changed)
+        {
+            var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+            var actor = await db.Users.FirstOrDefaultAsync(u => u.Id == currentUserId);
+            AuditLogger.Log(db, subject: null, actor: actor, action: "RegistrationClosedChanged",
+                newValue: request.Closed.ToString());
+        }
+
+        await db.SaveChangesAsync();
+        return Ok(ToDto(settings));
+    }
+
     [HttpGet("audit-log-settings")]
     public async Task<IActionResult> GetAuditLogSettings()
     {
@@ -105,7 +125,8 @@ public class AdminController(
         var lastScrapedAt = await db.Fixtures.MaxAsync(f => (DateTime?)f.UpdatedAt);
         var remindersConfigured = !string.IsNullOrWhiteSpace(twilio.Value.AccountSid)
             && !string.IsNullOrWhiteSpace(twilio.Value.AuthToken);
-        return Ok(new AdminStatusDto(lastScrapedAt, settings.Enabled, remindersConfigured, settings.PredictionsLocked));
+        return Ok(new AdminStatusDto(lastScrapedAt, settings.Enabled, remindersConfigured, settings.PredictionsLocked,
+            settings.RegistrationClosed));
     }
 
     private async Task<bool> IsSystemUserAsync()
@@ -115,6 +136,6 @@ public class AdminController(
     }
 
     private ScraperSettingsDto ToDto(ScraperSettings s) =>
-        new(s.Enabled, s.PollIntervalSeconds, s.Competition, s.SourceName, _sourceNames, s.PredictionsLocked,
+        new(s.Enabled, s.PollIntervalSeconds, s.Competition, s.SourceName, _sourceNames, s.PredictionsLocked, s.RegistrationClosed,
             s.ReminderEnabled, s.ReminderHoursBeforeFirstGame);
 }

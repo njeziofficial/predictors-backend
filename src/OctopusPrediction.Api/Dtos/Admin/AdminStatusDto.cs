@@ -4,5 +4,6 @@ public record AdminStatusDto(
     DateTime? LastScrapedAt,
     bool ScraperEnabled,
     bool RemindersConfigured,
-    bool PredictionsLocked
+    bool PredictionsLocked,
+    bool RegistrationClosed
 );

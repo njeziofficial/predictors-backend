@@ -19,7 +19,9 @@ public class LeaderboardController(AppDbContext db) : ControllerBase
             {
                 u.Id,
                 u.Name,
-                TotalPoints = u.Predictions.Sum(p => p.PointsEarned),
+                // Overall standings include points carried over from before the app.
+                PreviousPoints = u.PreviousPoints.Sum(pp => pp.Points),
+                TotalPoints = u.Predictions.Sum(p => p.PointsEarned) + u.PreviousPoints.Sum(pp => pp.Points),
                 LastSubmittedAt = u.Predictions.Any()
                     ? (DateTime?)u.Predictions.Max(p => p.SubmittedAt)
                     : null
@@ -29,7 +31,7 @@ public class LeaderboardController(AppDbContext db) : ControllerBase
             .ToListAsync();
 
         return Ok(entries.Select((e, i) => new LeaderboardEntryDto(
-            e.Id.ToString(), e.Name, e.TotalPoints, i + 1, e.LastSubmittedAt
+            e.Id.ToString(), e.Name, e.TotalPoints, e.PreviousPoints, i + 1, e.LastSubmittedAt
         )));
     }
 
@@ -53,7 +55,7 @@ public class LeaderboardController(AppDbContext db) : ControllerBase
             .ToListAsync();
 
         return Ok(entries.Select((e, i) => new LeaderboardEntryDto(
-            e.Id.ToString(), e.Name, e.TotalPoints, i + 1, e.LastSubmittedAt
+            e.Id.ToString(), e.Name, e.TotalPoints, 0, i + 1, e.LastSubmittedAt
         )));
     }
 }
