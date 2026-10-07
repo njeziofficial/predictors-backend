@@ -67,6 +67,7 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
         var matchedUsers = new List<User?>();
         var seenEmails = new HashSet<string>();
         var seenUsers = new HashSet<Guid>();
+        var newWhatsAppKeys = new HashSet<string>();
 
         for (var i = 0; i < request.Rows.Count; i++)
         {
@@ -148,6 +149,13 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
             else if (name is null || name.Length < 2)
             {
                 Add(Result("error", "No account with this email. Add a name (2+ characters) to create one."));
+            }
+            else if (whatsApp is not null
+                     && (users.Any(u => WhatsAppNames.Key(u.WhatsAppName) == WhatsAppNames.Key(whatsApp))
+                         || !newWhatsAppKeys.Add(WhatsAppNames.Key(whatsApp))))
+            {
+                // WhatsApp names sign people in, so a new account can't reuse one.
+                Add(Result("error", WhatsAppNames.TakenMessage));
             }
             else
             {
@@ -307,8 +315,7 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
         a.Length > 0 && b.Length > 0 && Math.Min(a.Length, b.Length) >= MinPrefixLength
         && (a.StartsWith(b, StringComparison.Ordinal) || b.StartsWith(a, StringComparison.Ordinal));
 
-    private static string NormalizeName(string? name) =>
-        new((name ?? "").Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+    private static string NormalizeName(string? name) => WhatsAppNames.Key(name);
 
     private Task<User?> GetCurrentAdminAsync()
     {

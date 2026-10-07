@@ -40,6 +40,8 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         var email = request.Email.Trim().ToLower();
         if (await db.Users.AnyAsync(u => u.Email == email))
             return Conflict(new { message = "A user with this email already exists." });
+        if (await WhatsAppNames.IsTakenAsync(db, request.WhatsAppName))
+            return Conflict(new { message = WhatsAppNames.TakenMessage });
 
         var generated = string.IsNullOrWhiteSpace(request.Password);
         var password = generated ? GenerateTemporaryPassword() : request.Password!;
@@ -110,6 +112,8 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
             return BadRequest(new { message = "Phone number must be at most 30 characters." });
         if (whatsApp?.Length > 200)
             return BadRequest(new { message = "WhatsApp name must be at most 200 characters." });
+        if (whatsApp != user.WhatsAppName && await WhatsAppNames.IsTakenAsync(db, whatsApp, id))
+            return Conflict(new { message = WhatsAppNames.TakenMessage });
 
         void Change(string field, string? previous, string? next, Action apply)
         {

@@ -28,6 +28,10 @@ public class UsersController(AppDbContext db) : ControllerBase
         var user = await GetCurrentUserAsync();
         if (user is null) return NotFound();
 
+        if (user.WhatsAppName != request.WhatsAppName
+            && await WhatsAppNames.IsTakenAsync(db, request.WhatsAppName, user.Id))
+            return Conflict(new { message = WhatsAppNames.TakenMessage });
+
         if (user.Name != request.Name)
             AuditLogger.Log(db, subject: user, actor: user, action: "ProfileUpdated",
                 field: "Name", previousValue: user.Name, newValue: request.Name);

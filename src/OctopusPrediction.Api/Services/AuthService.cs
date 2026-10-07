@@ -26,8 +26,29 @@ public class AuthService(AppDbContext db, IConfiguration config) : IAuthService
 
     public async Task<LoginResult> LoginAsync(LoginRequest request)
     {
-        var user = await db.Users.FirstOrDefaultAsync(u => u.Email == request.Email.ToLower());
-        if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash))
+        var login = (request.Login ?? request.Email ?? "").Trim();
+        var byEmail = request.Method switch
+        {
+            "email" => true,
+            "whatsapp" => false,
+            _ => login.Contains('@'),
+        };
+        User? user;
+        if (byEmail)
+        {
+            user = await db.Users.FirstOrDefaultAsync(u => u.Email == login.ToLower());
+            if (user is not null && !BCrypt.Net.BCrypt.Verify(request.Password, user.PasswordHash)) user = null;
+        }
+        else
+        {
+            // Names registered before duplicates were refused may be shared; the password then
+            // picks the account, and if it fits more than one the user has to use their email.
+            var matching = (await WhatsAppNames.FindAsync(db, login))
+                .Where(u => BCrypt.Net.BCrypt.Verify(request.Password, u.PasswordHash))
+                .ToList();
+            user = matching.Count == 1 ? matching[0] : null;
+        }
+        if (user is null)
             return new LoginResult(null, LoginFailureReason.InvalidCredentials);
 
         if (user.IsDisabled)

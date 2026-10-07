@@ -32,7 +32,16 @@ public class AuthController(
                 message = "Your account has been disabled. Please contact an admin."
             });
 
-        if (result.Session is null) return Unauthorized(new { message = "Invalid email or password." });
+        if (result.Session is null)
+            return Unauthorized(new
+            {
+                message = request.Method switch
+                {
+                    "email" => "Incorrect email or password.",
+                    "whatsapp" => "Incorrect WhatsApp name or password.",
+                    _ => "Incorrect email, WhatsApp name or password.",
+                }
+            });
         SetRefreshCookie(result.Session);
         return Ok(result.Session.Response);
     }
@@ -55,6 +64,10 @@ public class AuthController(
                 code = "registration_closed",
                 message = "Registration is currently closed. Please contact an admin."
             });
+
+        // WhatsApp names sign people in, so each one can belong to one account only.
+        if (await WhatsAppNames.IsTakenAsync(db, request.WhatsAppName))
+            return Conflict(new { message = WhatsAppNames.TakenMessage });
 
         var session = await auth.RegisterAsync(request);
         if (session is null) return Conflict(new { message = "Email already registered." });
