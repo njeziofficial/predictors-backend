@@ -19,23 +19,24 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
     private static readonly EmailAddressAttribute EmailValidator = new();
 
     [HttpGet]
+    [RequirePermission(Permissions.UsersView)]
     public async Task<IActionResult> GetAll()
     {
         var users = await db.Users.OrderBy(u => u.CreatedAt).ToListAsync();
         return Ok(users.Select(ToDto));
     }
 
-    // Creating accounts (of either role) is the system user's call only.
+    // Admins with the permission can create players; only the system user can create admins.
     [HttpPost]
+    [RequirePermission(Permissions.UsersCreate)]
     public async Task<IActionResult> Create(CreateUserRequest request)
     {
         var actor = await GetCurrentAdminAsync();
-        if (actor?.IsSystemUser != true)
-            return StatusCode(StatusCodes.Status403Forbidden,
-                new { message = "Only the system user can create users." });
 
         if (!Enum.TryParse<UserRole>(request.Role, true, out var role) || !Enum.IsDefined(role))
             return BadRequest(new { message = $"Invalid role: {request.Role}" });
+        if (role == UserRole.Admin && actor?.IsSystemUser != true)
+            return SystemUserOnly("Only the system admin can create admins.");
 
         var email = request.Email.Trim().ToLower();
         if (await db.Users.AnyAsync(u => u.Email == email))
@@ -73,17 +74,17 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         });
     }
 
-    // Editing someone's details is the system user's call only. Only the fields sent are changed.
+    // Only the fields sent are changed. An admin's details are the system user's to edit.
     [HttpPut("{id}")]
+    [RequirePermission(Permissions.UsersEdit)]
     public async Task<IActionResult> UpdateDetails(Guid id, UpdateUserDetailsRequest request)
     {
         var actor = await GetCurrentAdminAsync();
-        if (actor?.IsSystemUser != true)
-            return StatusCode(StatusCodes.Status403Forbidden,
-                new { message = "Only the system user can edit user details." });
 
         var user = await db.Users.FindAsync(id);
         if (user is null) return NotFound(new { message = "User not found." });
+        if (user.Role == UserRole.Admin && actor?.IsSystemUser != true)
+            return SystemUserOnly("Only the system admin can edit an admin's details.");
 
         var name = request.Name?.Trim();
         if (name is not null && name.Length < 2)
@@ -132,7 +133,9 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         return Ok(ToDto(user));
     }
 
+    // Promoting and demoting admins is never delegated.
     [HttpPut("{id}/role")]
+    [SystemUserOnly]
     public async Task<IActionResult> SetRole(Guid id, UpdateUserRoleRequest request)
     {
         if (!Enum.TryParse<UserRole>(request.Role, true, out var role) || !Enum.IsDefined(role))
@@ -146,11 +149,6 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
 
         var actor = await GetCurrentAdminAsync();
 
-        // Demoting an admin is the system user's call only — this also covers a regular admin
-        // trying to demote themselves, since they're an admin target and aren't the system user.
-        if (user.Role == UserRole.Admin && role != UserRole.Admin && actor?.IsSystemUser != true)
-            return BadRequest(new { message = "Only the system user can demote another admin." });
-
         var previousRole = user.Role;
         user.Role = role;
 
@@ -158,6 +156,10 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         {
             AuditLogger.Log(db, subject: user, actor: actor, action: "RoleChanged",
                 field: "Role", previousValue: previousRole.ToString(), newValue: role.ToString());
+            // A demoted admin's permission exceptions mean nothing now, and shouldn't come back
+            // if they're promoted again later.
+            if (role != UserRole.Admin)
+                db.UserPermissions.RemoveRange(db.UserPermissions.Where(p => p.UserId == user.Id));
         }
 
         await db.SaveChangesAsync();
@@ -165,6 +167,7 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
     }
 
     [HttpPut("{id}/status")]
+    [RequirePermission(Permissions.UsersStatus)]
     public async Task<IActionResult> SetStatus(Guid id, UpdateUserStatusRequest request)
     {
         var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
@@ -177,6 +180,10 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         if (user.IsSystemUser && request.IsDisabled)
             return BadRequest(new { message = "The system user can never be disabled." });
 
+        var actor = await GetCurrentAdminAsync();
+        if (user.Role == UserRole.Admin && actor?.IsSystemUser != true)
+            return SystemUserOnly("Only the system admin can enable or disable an admin.");
+
         var previousStatus = user.IsDisabled ? "Disabled" : "Enabled";
         var newStatus = request.IsDisabled ? "Disabled" : "Enabled";
         var changed = user.IsDisabled != request.IsDisabled;
@@ -184,7 +191,6 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
 
         if (changed)
         {
-            var actor = await GetCurrentAdminAsync();
             AuditLogger.Log(db, subject: user, actor: actor, action: "StatusChanged",
                 field: "Status", previousValue: previousStatus, newValue: newStatus);
         }
@@ -199,6 +205,7 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
     }
 
     [HttpPost("{id}/reset-password")]
+    [RequirePermission(Permissions.UsersResetPassword)]
     public async Task<IActionResult> ResetPassword(Guid id)
     {
         var user = await db.Users.FindAsync(id);
@@ -213,7 +220,7 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         // regular admin trying to reset their own password through this endpoint, since they
         // themselves are an admin target and aren't the system user.
         if (user.Role == UserRole.Admin && actor?.IsSystemUser != true)
-            return BadRequest(new { message = "Only the system user can reset another admin's password." });
+            return SystemUserOnly("Only the system admin can reset an admin's password.");
 
         var temporaryPassword = GenerateTemporaryPassword();
         user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(temporaryPassword);
@@ -245,6 +252,7 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
     }
 
     [HttpDelete("{id}")]
+    [RequirePermission(Permissions.UsersDelete)]
     public async Task<IActionResult> Delete(Guid id)
     {
         var user = await db.Users.FindAsync(id);
@@ -258,7 +266,7 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         // Deleting an admin is the system user's call only — this also covers a regular admin
         // trying to delete themselves, since they're an admin target and aren't the system user.
         if (user.Role == UserRole.Admin && actor?.IsSystemUser != true)
-            return BadRequest(new { message = "Only the system user can delete another admin." });
+            return SystemUserOnly("Only the system admin can delete an admin.");
 
         AuditLogger.Log(db, subject: user, actor: actor, action: "UserDeleted", details: $"Email: {user.Email}");
 
@@ -266,6 +274,9 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
         await db.SaveChangesAsync();
         return Ok(new { message = "User deleted." });
     }
+
+    private ObjectResult SystemUserOnly(string message) =>
+        StatusCode(StatusCodes.Status403Forbidden, new { code = "permission_denied", message });
 
     private Task<User?> GetCurrentAdminAsync()
     {

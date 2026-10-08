@@ -12,6 +12,7 @@ namespace OctopusPrediction.Api.Controllers;
 [ApiController]
 [Route("api/admin")]
 [Authorize(Roles = "Admin")]
+[RequirePermission(Permissions.FixturesManage)]
 public class AdminFixturesController(AppDbContext db, IScoringService scoring) : ControllerBase
 {
     [HttpPost("weeks")]

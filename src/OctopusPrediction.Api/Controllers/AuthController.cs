@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Dtos.Auth;
 using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.Caching;
 
 namespace OctopusPrediction.Api.Controllers;
 
@@ -12,6 +13,7 @@ public class AuthController(
     IAuthService auth,
     AppDbContext db,
     IOptions<LiveScraperSettings> defaults,
+    AppCache cache,
     IWebHostEnvironment env) : ControllerBase
 {
     // The refresh token never appears in a response body: it lives only in this httpOnly cookie,
@@ -50,14 +52,14 @@ public class AuthController(
     [HttpGet("registration-status")]
     public async Task<IActionResult> GetRegistrationStatus()
     {
-        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var settings = await cache.SettingsAsync(db, defaults.Value);
         return Ok(new { open = !settings.RegistrationClosed });
     }
 
     [HttpPost("register")]
     public async Task<IActionResult> Register(RegisterRequest request)
     {
-        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var settings = await cache.SettingsAsync(db, defaults.Value);
         if (settings.RegistrationClosed)
             return StatusCode(403, new
             {

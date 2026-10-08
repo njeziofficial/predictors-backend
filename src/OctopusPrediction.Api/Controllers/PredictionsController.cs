@@ -7,30 +7,29 @@ using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Dtos.Predictions;
 using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.Caching;
 
 namespace OctopusPrediction.Api.Controllers;
 
 [ApiController]
 [Route("api/predictions")]
 [Authorize]
-public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings> defaults) : ControllerBase
+public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings> defaults, AppCache cache) : ControllerBase
 {
     [HttpGet("lock-status")]
     public async Task<IActionResult> GetLockStatus()
     {
-        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var settings = await cache.SettingsAsync(db, defaults.Value);
         return Ok(new { locked = settings.PredictionsLocked });
     }
 
     [HttpPost]
     public async Task<IActionResult> Submit(SubmitPredictionsRequest request)
     {
+        // Admins play too: they pick the main application after signing in.
         var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
-        if (User.FindFirstValue(ClaimTypes.Role) == "Admin")
-            return Forbid();
-
-        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var settings = await cache.SettingsAsync(db, defaults.Value);
         if (settings.PredictionsLocked)
             return StatusCode(403, new { message = "Predictions are currently locked by an admin." });
 

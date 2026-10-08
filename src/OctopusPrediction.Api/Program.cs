@@ -4,8 +4,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using OctopusPrediction.Api.Data;
+using OctopusPrediction.Api.Hubs;
 using OctopusPrediction.Api.Middleware;
 using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.Caching;
 using OctopusPrediction.Api.Services.Scraping;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -46,8 +48,17 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // ── Database ──────────────────────────────────────────────────────────────────
-builder.Services.AddDbContext<AppDbContext>(opts =>
-    opts.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+// ── Caching ───────────────────────────────────────────────────────────────────
+// Hot reads (auth checks, standings, fixtures, settings) come from memory; the interceptor on
+// every DbContext empties the affected entries after each save. See Services/Caching.
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<AppCache>();
+builder.Services.AddSingleton<LiveUpdateNotifier>();
+builder.Services.AddSingleton<CacheInvalidationInterceptor>();
+
+builder.Services.AddDbContext<AppDbContext>((sp, opts) =>
+    opts.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
+        .AddInterceptors(sp.GetRequiredService<CacheInvalidationInterceptor>()));
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 var jwtKey = builder.Configuration["Jwt:Key"]
@@ -67,8 +78,27 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateLifetime = true,
             ClockSkew = TimeSpan.Zero
         };
+        // Browsers can't set an Authorization header on a WebSocket (or SSE) request, so the
+        // SignalR client sends the access token as ?access_token=… instead. Only honoured on
+        // the hub's own path, so it can't be used to authenticate ordinary API calls.
+        opts.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var token = context.Request.Query["access_token"];
+                if (!string.IsNullOrEmpty(token) && context.HttpContext.Request.Path.StartsWithSegments(ChatHub.Path))
+                    context.Token = token;
+                return Task.CompletedTask;
+            }
+        };
     });
 builder.Services.AddAuthorization();
+
+// ── Real-time chat (SignalR) ─────────────────────────────────────────────────
+builder.Services.AddSignalR(opts => opts.MaximumReceiveMessageSize = 16 * 1024)
+    .AddJsonProtocol(opts =>
+        opts.PayloadSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
+builder.Services.AddSingleton<PresenceTracker>();
 
 // ── App Services ──────────────────────────────────────────────────────────────
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -237,9 +267,69 @@ try
         await db.Database.ExecuteSqlRawAsync(
             "CREATE INDEX IF NOT EXISTS \"IX_RefreshTokens_FamilyId\" ON \"RefreshTokens\" (\"FamilyId\");");
 
+        // Back-office permissions: defaults for every admin, and per-admin exceptions.
+        // Same SQL as db/supabase/2026-10-07-admin-permissions.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "RolePermissions" (
+                "Permission" character varying(64) NOT NULL PRIMARY KEY,
+                "Allowed" boolean NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "UpdatedByUserId" uuid NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "UserPermissions" (
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "Permission" character varying(64) NOT NULL,
+                "Allowed" boolean NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "UpdatedByUserId" uuid NULL,
+                PRIMARY KEY ("UserId", "Permission")
+            );
+            """);
+        await Permissions.SeedDefaultsAsync(db);
+
+        // In-app chat. Same SQL as db/supabase/2026-10-08-chat.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "Conversations" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "DirectKey" character varying(80) NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "LastMessageAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Conversations_DirectKey\" ON \"Conversations\" (\"DirectKey\");");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ConversationParticipants" (
+                "ConversationId" uuid NOT NULL REFERENCES "Conversations" ("Id") ON DELETE CASCADE,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "JoinedAt" timestamp with time zone NOT NULL,
+                "LastReadAt" timestamp with time zone NULL,
+                PRIMARY KEY ("ConversationId", "UserId")
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_ConversationParticipants_UserId\" ON \"ConversationParticipants\" (\"UserId\");");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "ChatMessages" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "ConversationId" uuid NOT NULL REFERENCES "Conversations" ("Id") ON DELETE CASCADE,
+                "SenderId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "Body" character varying(2000) NOT NULL,
+                "IsAnnouncement" boolean NOT NULL DEFAULT false,
+                "ClientId" character varying(64) NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "DeletedAt" timestamp with time zone NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_ChatMessages_ConversationId_CreatedAt\" ON \"ChatMessages\" (\"ConversationId\", \"CreatedAt\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ChatMessages_SenderId_ClientId\" ON \"ChatMessages\" (\"SenderId\", \"ClientId\");");
+
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         await DbSeeder.SeedAdminUserAsync(db, builder.Configuration, seedLogger);
-        await DbSeeder.SeedSecondaryAdminAsync(db, builder.Configuration, seedLogger);
 
         var scraperDefaults = scope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptions<LiveScraperSettings>>();
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, scraperDefaults.Value);
@@ -267,5 +357,6 @@ app.UseAuthentication();
 app.UseMiddleware<DisabledUserMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHub<ChatHub>(ChatHub.Path);
 
 app.Run();

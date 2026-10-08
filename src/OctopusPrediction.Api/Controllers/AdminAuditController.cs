@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OctopusPrediction.Api.Data;
+using OctopusPrediction.Api.Services;
 using OctopusPrediction.Api.Dtos.Admin;
 
 namespace OctopusPrediction.Api.Controllers;
@@ -12,6 +13,7 @@ namespace OctopusPrediction.Api.Controllers;
 public class AdminAuditController(AppDbContext db) : ControllerBase
 {
     [HttpGet]
+    [RequirePermission(Permissions.AuditView)]
     public async Task<IActionResult> GetAll(
         [FromQuery] string? userId,
         [FromQuery] string? search,

@@ -14,6 +14,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PreviousPoints> PreviousPoints => Set<PreviousPoints>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<PlayerAlias> PlayerAliases => Set<PlayerAlias>();
+    public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
+    public DbSet<UserPermission> UserPermissions => Set<UserPermission>();
+    public DbSet<Conversation> Conversations => Set<Conversation>();
+    public DbSet<ConversationParticipant> ConversationParticipants => Set<ConversationParticipant>();
+    public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -118,6 +123,60 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             a.HasOne(x => x.User)
               .WithMany()
               .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<RolePermission>(r =>
+        {
+            r.HasKey(x => x.Permission);
+            r.Property(x => x.Permission).HasMaxLength(64);
+        });
+
+        mb.Entity<UserPermission>(p =>
+        {
+            p.HasKey(x => new { x.UserId, x.Permission });
+            p.Property(x => x.Permission).HasMaxLength(64);
+            p.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<Conversation>(c =>
+        {
+            c.HasKey(x => x.Id);
+            c.Property(x => x.DirectKey).HasMaxLength(80);
+            c.HasIndex(x => x.DirectKey).IsUnique();
+        });
+
+        mb.Entity<ConversationParticipant>(p =>
+        {
+            p.HasKey(x => new { x.ConversationId, x.UserId });
+            p.HasIndex(x => x.UserId);
+            p.HasOne(x => x.Conversation)
+              .WithMany(x => x.Participants)
+              .HasForeignKey(x => x.ConversationId)
+              .OnDelete(DeleteBehavior.Cascade);
+            p.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<ChatMessage>(m =>
+        {
+            m.HasKey(x => x.Id);
+            m.Property(x => x.Body).HasMaxLength(2000);
+            m.Property(x => x.ClientId).HasMaxLength(64);
+            m.HasIndex(x => new { x.ConversationId, x.CreatedAt });
+            m.HasIndex(x => new { x.SenderId, x.ClientId }).IsUnique();
+            m.HasOne(x => x.Conversation)
+              .WithMany(x => x.Messages)
+              .HasForeignKey(x => x.ConversationId)
+              .OnDelete(DeleteBehavior.Cascade);
+            m.HasOne(x => x.Sender)
+              .WithMany()
+              .HasForeignKey(x => x.SenderId)
               .OnDelete(DeleteBehavior.Cascade);
         });
     }

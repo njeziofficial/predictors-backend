@@ -55,33 +55,4 @@ public static class DbSeeder
         await db.SaveChangesAsync();
         logger.LogInformation("[DbSeeder] Seeded system admin user {Email}", email);
     }
-
-    // A second, ordinary admin — has full admin access but, unlike the system user, can be
-    // disabled/demoted/deleted like any other account.
-    public static async Task SeedSecondaryAdminAsync(AppDbContext db, IConfiguration config, ILogger logger)
-    {
-        var email = config["SecondaryAdmin:Email"];
-        var password = config["SecondaryAdmin:Password"];
-
-        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
-            return;
-
-        email = email.ToLower();
-
-        var exists = await db.Users.AnyAsync(u => u.Email == email);
-        if (exists) return;
-
-        db.Users.Add(new User
-        {
-            Id = Guid.NewGuid(),
-            Name = "Admin (Secondary)",
-            Email = email,
-            PasswordHash = BCrypt.Net.BCrypt.HashPassword(password),
-            Role = UserRole.Admin,
-            CreatedAt = DateTime.UtcNow
-        });
-
-        await db.SaveChangesAsync();
-        logger.LogInformation("[DbSeeder] Seeded secondary admin user {Email}", email);
-    }
 }

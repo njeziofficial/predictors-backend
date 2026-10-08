@@ -24,6 +24,7 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
     private const int MinPrefixLength = 4;
 
     [HttpGet]
+    [RequirePermission(Permissions.PreviousPointsView)]
     public async Task<IActionResult> GetAll()
     {
         var entries = await db.PreviousPoints
@@ -43,12 +44,12 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
     // replaces each user's points for that label rather than adding to them, so it's safe to re-run
     // a corrected file — e.g. each week's league table under one label.
     [HttpPost("import")]
+    [RequirePermission(Permissions.PreviousPointsManage)]
     public async Task<IActionResult> Import(PreviousPointsImportRequest request)
     {
         var actor = await GetCurrentAdminAsync();
-        if (actor?.IsSystemUser != true)
-            return StatusCode(StatusCodes.Status403Forbidden,
-                new { message = "Only the system user can import previous points." });
+        // Rows with an unknown email create accounts, which is a separate permission.
+        var canCreateUsers = await Permissions.HasAsync(db, actor!, Permissions.UsersCreate);
 
         var label = request.Label.Trim();
         if (label.Length == 0)
@@ -157,6 +158,10 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
                 // WhatsApp names sign people in, so a new account can't reuse one.
                 Add(Result("error", WhatsAppNames.TakenMessage));
             }
+            else if (!canCreateUsers)
+            {
+                Add(Result("error", "No account with this email, and you don't have permission to create players."));
+            }
             else
             {
                 Add(Result("create_user"));
@@ -235,12 +240,10 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
     }
 
     [HttpDelete("{id}")]
+    [RequirePermission(Permissions.PreviousPointsManage)]
     public async Task<IActionResult> Delete(Guid id)
     {
         var actor = await GetCurrentAdminAsync();
-        if (actor?.IsSystemUser != true)
-            return StatusCode(StatusCodes.Status403Forbidden,
-                new { message = "Only the system user can remove previous points." });
 
         var entry = await db.PreviousPoints.Include(pp => pp.User).FirstOrDefaultAsync(pp => pp.Id == id);
         if (entry is null) return NotFound(new { message = "Entry not found." });

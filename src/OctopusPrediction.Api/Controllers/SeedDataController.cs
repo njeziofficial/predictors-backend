@@ -1,13 +1,20 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Entities;
+using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.Caching;
 
 namespace OctopusPrediction.Api.Controllers;
 
+// Loads test fixtures or wipes every table, so it is the system admin's alone.
 [ApiController]
 [Route("api/seed")]
-public class SeedDataController(AppDbContext db, ILogger<SeedDataController> logger) : ControllerBase
+[Authorize(Roles = "Admin")]
+[SystemUserOnly]
+public class SeedDataController(
+    AppDbContext db, AppCache cache, LiveUpdateNotifier notifier, ILogger<SeedDataController> logger) : ControllerBase
 {
     [HttpPost("test-data")]
     public async Task<IActionResult> SeedTestData()
@@ -126,6 +133,10 @@ public class SeedDataController(AppDbContext db, ILogger<SeedDataController> log
             await db.Predictions.ExecuteDeleteAsync();
             await db.Fixtures.ExecuteDeleteAsync();
             await db.MatchWeeks.ExecuteDeleteAsync();
+            // Bulk deletes skip SaveChanges, so the cache interceptor never sees them.
+            CacheRegion[] cleared = [CacheRegion.Fixtures, CacheRegion.Leaderboard];
+            cache.Invalidate(cleared);
+            notifier.Notify(cleared);
 
             logger.LogInformation("[SeedDataController] Database cleared successfully");
 

@@ -23,6 +23,7 @@ public class AdminController(
     private readonly IReadOnlyList<string> _sourceNames = [.. sources.Select(s => s.Name)];
 
     [HttpGet("settings")]
+    [RequirePermission(Permissions.SettingsView)]
     public async Task<IActionResult> GetSettings()
     {
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
@@ -30,6 +31,7 @@ public class AdminController(
     }
 
     [HttpPut("settings")]
+    [RequirePermission(Permissions.SettingsManage)]
     public async Task<IActionResult> UpdateSettings(UpdateScraperSettingsRequest request)
     {
         if (!_sourceNames.Contains(request.SourceName, StringComparer.OrdinalIgnoreCase))
@@ -47,6 +49,7 @@ public class AdminController(
     }
 
     [HttpPut("predictions-lock")]
+    [RequirePermission(Permissions.SettingsManage)]
     public async Task<IActionResult> SetPredictionsLock(SetPredictionsLockRequest request)
     {
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
@@ -67,6 +70,7 @@ public class AdminController(
 
     // Stops new sign-ups through POST /api/auth/register. Existing users are unaffected.
     [HttpPut("registration")]
+    [RequirePermission(Permissions.SettingsManage)]
     public async Task<IActionResult> SetRegistrationClosed(SetRegistrationClosedRequest request)
     {
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
@@ -85,20 +89,19 @@ public class AdminController(
         return Ok(ToDto(settings));
     }
 
+    // Switching the audit log off would let an admin hide their own changes, so it stays with the system user.
     [HttpGet("audit-log-settings")]
+    [SystemUserOnly]
     public async Task<IActionResult> GetAuditLogSettings()
     {
-        if (!await IsSystemUserAsync()) return Forbid();
-
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
         return Ok(new AuditLogSettingsDto(settings.AuditLogEnabled));
     }
 
     [HttpPut("audit-log-settings")]
+    [SystemUserOnly]
     public async Task<IActionResult> SetAuditLogSettings(SetAuditLogEnabledRequest request)
     {
-        if (!await IsSystemUserAsync()) return Forbid();
-
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
         if (settings.AuditLogEnabled != request.Enabled)
         {
@@ -127,12 +130,6 @@ public class AdminController(
             && !string.IsNullOrWhiteSpace(twilio.Value.AuthToken);
         return Ok(new AdminStatusDto(lastScrapedAt, settings.Enabled, remindersConfigured, settings.PredictionsLocked,
             settings.RegistrationClosed));
-    }
-
-    private async Task<bool> IsSystemUserAsync()
-    {
-        var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-        return await db.Users.AnyAsync(u => u.Id == currentUserId && u.IsSystemUser);
     }
 
     private ScraperSettingsDto ToDto(ScraperSettings s) =>

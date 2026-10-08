@@ -1,27 +1,26 @@
 using System.Security.Claims;
-using Microsoft.EntityFrameworkCore;
 using OctopusPrediction.Api.Data;
+using OctopusPrediction.Api.Services.Caching;
 
 namespace OctopusPrediction.Api.Middleware;
 
 // JWTs are stateless, so a user disabled mid-session would otherwise keep working until
 // their token expires. This re-checks the live IsDisabled flag on every authenticated
-// request and cuts them off immediately, wherever in the app they are.
+// request and cuts them off immediately, wherever in the app they are. The flag comes from the
+// access cache, which is emptied the moment an admin disables someone, so this stays immediate
+// without a database round trip per request.
 public class DisabledUserMiddleware(RequestDelegate next)
 {
-    public async Task InvokeAsync(HttpContext context, AppDbContext db)
+    public async Task InvokeAsync(HttpContext context, AppDbContext db, AppCache cache)
     {
         if (context.User.Identity?.IsAuthenticated == true)
         {
             var userIdClaim = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (Guid.TryParse(userIdClaim, out var userId))
             {
-                var isDisabled = await db.Users
-                    .Where(u => u.Id == userId)
-                    .Select(u => u.IsDisabled)
-                    .FirstOrDefaultAsync();
+                var access = await cache.UserAccessAsync(db, userId);
 
-                if (isDisabled)
+                if (access?.IsDisabled == true)
                 {
                     context.Response.StatusCode = StatusCodes.Status403Forbidden;
                     context.Response.ContentType = "application/json";
