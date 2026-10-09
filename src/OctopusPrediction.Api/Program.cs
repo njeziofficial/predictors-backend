@@ -221,6 +221,15 @@ try
             "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"MustResetPassword\" boolean NOT NULL DEFAULT false;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AuditLogEnabled\" boolean NOT NULL DEFAULT true;");
+        // Prediction rules. Same SQL as db/supabase/2026-10-09-prediction-rules.sql.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AllowPartialPredictions\" boolean NOT NULL DEFAULT false;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"PredictionsFinal\" boolean NOT NULL DEFAULT false;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"LockWeekAtFirstKickoff\" boolean NOT NULL DEFAULT false;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AllowLatePredictions\" boolean NOT NULL DEFAULT false;");
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "PreviousPoints" (
                 "Id" uuid NOT NULL PRIMARY KEY,

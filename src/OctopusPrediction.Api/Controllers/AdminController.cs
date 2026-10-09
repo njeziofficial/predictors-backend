@@ -89,6 +89,38 @@ public class AdminController(
         return Ok(ToDto(settings));
     }
 
+    // Only the system user by default; it can be granted to other admins (Permissions.PredictionRulesManage).
+    [HttpPut("prediction-rules")]
+    [RequirePermission(Permissions.PredictionRulesManage)]
+    public async Task<IActionResult> SetPredictionRules(PredictionRulesDto request)
+    {
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var changes = new List<(string Field, bool Previous, bool New)>
+        {
+            ("Allow incomplete predictions", settings.AllowPartialPredictions, request.AllowPartialPredictions),
+            ("Predictions are final", settings.PredictionsFinal, request.PredictionsFinal),
+            ("Lock week at first kickoff", settings.LockWeekAtFirstKickoff, request.LockWeekAtFirstKickoff),
+            ("Allow late predictions", settings.AllowLatePredictions, request.AllowLatePredictions),
+        }.Where(c => c.Previous != c.New).ToList();
+
+        settings.AllowPartialPredictions = request.AllowPartialPredictions;
+        settings.PredictionsFinal = request.PredictionsFinal;
+        settings.LockWeekAtFirstKickoff = request.LockWeekAtFirstKickoff;
+        settings.AllowLatePredictions = request.AllowLatePredictions;
+
+        if (changes.Count > 0)
+        {
+            var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+            var actor = await db.Users.FirstOrDefaultAsync(u => u.Id == currentUserId);
+            foreach (var (field, previous, value) in changes)
+                AuditLogger.Log(db, subject: null, actor: actor, action: "PredictionRuleChanged",
+                    field: field, previousValue: previous ? "On" : "Off", newValue: value ? "On" : "Off");
+        }
+
+        await db.SaveChangesAsync();
+        return Ok(ToDto(settings));
+    }
+
     // Switching the audit log off would let an admin hide their own changes, so it stays with the system user.
     [HttpGet("audit-log-settings")]
     [SystemUserOnly]
@@ -134,5 +166,7 @@ public class AdminController(
 
     private ScraperSettingsDto ToDto(ScraperSettings s) =>
         new(s.Enabled, s.PollIntervalSeconds, s.Competition, s.SourceName, _sourceNames, s.PredictionsLocked, s.RegistrationClosed,
-            s.ReminderEnabled, s.ReminderHoursBeforeFirstGame);
+            s.ReminderEnabled, s.ReminderHoursBeforeFirstGame,
+            new PredictionRulesDto(s.AllowPartialPredictions, s.PredictionsFinal, s.LockWeekAtFirstKickoff,
+                s.AllowLatePredictions));
 }

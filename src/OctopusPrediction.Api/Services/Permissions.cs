@@ -31,6 +31,7 @@ public static class Permissions
     public const string AuditView = "audit.view";
     public const string SettingsView = "settings.view";
     public const string SettingsManage = "settings.manage";
+    public const string PredictionRulesManage = "predictions.rules";
     public const string MessagesBroadcast = "messages.broadcast";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
@@ -61,6 +62,8 @@ public static class Permissions
             "See scraper, reminder, lock and registration settings.", true),
         new(SettingsManage, "Settings", "Change settings",
             "Change the scraper and reminders, lock predictions and open or close registration.", true),
+        new(PredictionRulesManage, "Settings", "Change prediction rules",
+            "Choose whether incomplete predictions are allowed, whether submitted predictions are final, and when a week locks.", false),
         new(MessagesBroadcast, "Messages", "Send announcements",
             "Message every player, or a chosen group, at once. Players can reply in their chat with you.", true),
     ];

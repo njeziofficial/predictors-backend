@@ -14,7 +14,13 @@ public record UserAccess(bool IsDisabled, UserRole Role, bool IsSystemUser, IRea
     public bool Can(string permission) => Permissions.GetValueOrDefault(permission);
 }
 
-public record SettingsSnapshot(bool PredictionsLocked, bool RegistrationClosed);
+public record SettingsSnapshot(
+    bool PredictionsLocked,
+    bool RegistrationClosed,
+    bool AllowPartialPredictions,
+    bool PredictionsFinal,
+    bool LockWeekAtFirstKickoff,
+    bool AllowLatePredictions);
 
 // Every week with its fixtures, already mapped, plus the lookups the endpoints need.
 public sealed class WeeksSnapshot
@@ -48,7 +54,8 @@ public static class CachedReads
         cache.GetOrCreateAsync("settings", CacheRegion.Settings, TimeSpan.FromMinutes(10), async () =>
         {
             var s = await ScraperSettingsStore.GetOrCreateAsync(db, defaults);
-            return new SettingsSnapshot(s.PredictionsLocked, s.RegistrationClosed);
+            return new SettingsSnapshot(s.PredictionsLocked, s.RegistrationClosed, s.AllowPartialPredictions,
+                s.PredictionsFinal, s.LockWeekAtFirstKickoff, s.AllowLatePredictions);
         });
 
     public static Task<WeeksSnapshot> WeeksAsync(this AppCache cache, AppDbContext db) =>

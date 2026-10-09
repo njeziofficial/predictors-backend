@@ -9,5 +9,6 @@ public record ScraperSettingsDto(
     bool PredictionsLocked,
     bool RegistrationClosed,
     bool ReminderEnabled,
-    int ReminderHoursBeforeFirstGame
+    int ReminderHoursBeforeFirstGame,
+    PredictionRulesDto PredictionRules
 );

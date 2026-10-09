@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OctopusPrediction.Api.Data;
+using OctopusPrediction.Api.Dtos.Admin;
 using OctopusPrediction.Api.Dtos.Predictions;
 using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services;
@@ -20,8 +21,16 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
     public async Task<IActionResult> GetLockStatus()
     {
         var settings = await cache.SettingsAsync(db, defaults.Value);
-        return Ok(new { locked = settings.PredictionsLocked });
+        return Ok(new
+        {
+            locked = settings.PredictionsLocked,
+            rules = new PredictionRulesDto(settings.AllowPartialPredictions, settings.PredictionsFinal,
+                settings.LockWeekAtFirstKickoff, settings.AllowLatePredictions)
+        });
     }
+
+    // A match stops taking predictions this long before its kickoff.
+    private static readonly TimeSpan KickoffLockLead = TimeSpan.FromSeconds(30);
 
     [HttpPost]
     public async Task<IActionResult> Submit(SubmitPredictionsRequest request)
@@ -47,48 +56,103 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
 
         if (week is null) return NotFound(new { message = "Week not found." });
 
-        var earliest = week.Fixtures
-            .Where(f => f.Status == FixtureStatus.PreMatch)
-            .MinBy(f => f.Kickoff);
+        // A match is open until KickoffLockLead before its kickoff, or until the scraper sees it
+        // start, whichever comes first. Postponed and cancelled matches can't be predicted.
+        var lockAt = DateTime.UtcNow + KickoffLockLead;
+        var playable = week.Fixtures
+            .Where(f => f.Status is not (FixtureStatus.Postponed or FixtureStatus.Cancelled))
+            .ToList();
+        var open = playable
+            .Where(f => f.Status == FixtureStatus.PreMatch && f.Kickoff > lockAt)
+            .ToDictionary(f => f.Id);
+        var weekStarted = playable.Any(f => f.Status != FixtureStatus.PreMatch || f.Kickoff <= lockAt);
 
-        if (earliest is null)
-            return BadRequest(new { message = "No open fixtures in this week." });
+        var weekFixtureIds = week.Fixtures.Select(f => f.Id).ToList();
+        var mine = await db.Predictions
+            .Where(p => p.UserId == userId && weekFixtureIds.Contains(p.FixtureId))
+            .ToDictionaryAsync(p => p.FixtureId);
 
-        if (DateTime.UtcNow >= earliest.Kickoff.AddSeconds(-30))
+        // Late predictions: only for players who had predicted nothing when the week locked.
+        if (settings.LockWeekAtFirstKickoff && weekStarted && !(settings.AllowLatePredictions && mine.Count == 0))
+            return BadRequest(new { message = "Predictions for this week locked when its first match kicked off." });
+
+        if (open.Count == 0)
             return BadRequest(new { message = "Predictions are locked for this week." });
 
+        var submitted = new Dictionary<string, (Fixture Fixture, OutcomeType Outcome, int? Home, int? Away)>();
         foreach (var item in request.Predictions)
         {
             var outcome = ParseOutcome(item.Outcome);
             if (outcome is null)
                 return BadRequest(new { message = $"Invalid outcome: {item.Outcome}" });
 
-            var fixture = week.Fixtures.FirstOrDefault(f => f.Id == item.FixtureId);
-            if (fixture is null || fixture.Status != FixtureStatus.PreMatch) continue;
+            // Matches that have started (or aren't in this week) are skipped, not refused, so a
+            // page left open across a kickoff can still save the rest.
+            if (!open.TryGetValue(item.FixtureId, out var fixture)) continue;
 
-            var existing = await db.Predictions
-                .FirstOrDefaultAsync(p => p.UserId == userId && p.FixtureId == item.FixtureId);
+            if (outcome == OutcomeType.CorrectScore && (item.HomeGoals is not >= 0 || item.AwayGoals is not >= 0))
+                return BadRequest(new { message = $"Enter the score for {fixture.HomeTeam} vs {fixture.AwayTeam}." });
 
-            if (existing is null)
+            submitted[item.FixtureId] = (fixture, outcome.Value, item.HomeGoals, item.AwayGoals);
+        }
+
+        if (settings.PredictionsFinal)
+        {
+            var changed = submitted.Values.FirstOrDefault(s =>
+                mine.TryGetValue(s.Fixture.Id, out var p)
+                && (p.Outcome != s.Outcome
+                    // Goals only count for a score pick (other picks may carry stale ones).
+                    || (s.Outcome == OutcomeType.CorrectScore && (p.HomeGoals != s.Home || p.AwayGoals != s.Away))));
+            if (changed.Fixture is not null)
+                return BadRequest(new
+                {
+                    message = $"Your prediction for {changed.Fixture.HomeTeam} vs {changed.Fixture.AwayTeam} " +
+                              "is final and can't be changed."
+                });
+        }
+
+        if (!settings.AllowPartialPredictions)
+        {
+            var missing = open.Values
+                .Where(f => !mine.ContainsKey(f.Id) && !submitted.ContainsKey(f.Id))
+                .OrderBy(f => f.Kickoff)
+                .ToList();
+            if (missing.Count > 0)
+                return BadRequest(new
+                {
+                    message = $"Predict every match before submitting. Still to predict: " +
+                              string.Join(", ", missing.Select(f => $"{f.HomeTeam} vs {f.AwayTeam}")) + "."
+                });
+        }
+
+        if (submitted.Count == 0)
+            return BadRequest(new { message = "Pick at least one match to predict." });
+
+        var now = DateTime.UtcNow;
+        foreach (var (fixtureId, s) in submitted)
+        {
+            if (mine.TryGetValue(fixtureId, out var existing))
+            {
+                // Under PredictionsFinal only unchanged resubmissions get here; leave them be.
+                if (settings.PredictionsFinal) continue;
+                existing.Outcome = s.Outcome;
+                existing.HomeGoals = s.Home;
+                existing.AwayGoals = s.Away;
+                existing.SubmittedAt = now;
+            }
+            else
             {
                 db.Predictions.Add(new Prediction
                 {
                     Id = Guid.NewGuid(),
                     UserId = userId,
-                    FixtureId = item.FixtureId,
+                    FixtureId = fixtureId,
                     WeekId = request.WeekId,
-                    Outcome = outcome.Value,
-                    HomeGoals = item.HomeGoals,
-                    AwayGoals = item.AwayGoals,
-                    SubmittedAt = DateTime.UtcNow
+                    Outcome = s.Outcome,
+                    HomeGoals = s.Home,
+                    AwayGoals = s.Away,
+                    SubmittedAt = now
                 });
-            }
-            else
-            {
-                existing.Outcome = outcome.Value;
-                existing.HomeGoals = item.HomeGoals;
-                existing.AwayGoals = item.AwayGoals;
-                existing.SubmittedAt = DateTime.UtcNow;
             }
         }
 
