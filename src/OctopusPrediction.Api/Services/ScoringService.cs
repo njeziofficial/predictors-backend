@@ -18,8 +18,14 @@ public class ScoringService(AppDbContext db) : IScoringService
         [OutcomeType.CorrectScore] = CorrectScorePoints,
     };
 
-    public int ScorePrediction(Prediction prediction, Fixture fixture)
+    public int ScorePrediction(Prediction prediction, Fixture fixture, DateTime? previousPointsSince = null)
     {
+        // A player's previous points are their league table as of the import, so they already
+        // include every match played before it. In-app predictions on those matches (made while
+        // the app was being tried out) would count them twice.
+        if (previousPointsSince is { } since && fixture.Kickoff < since)
+            return 0;
+
         if (fixture.Status != FixtureStatus.Ended
             || fixture.FinalScoreHome is null
             || fixture.FinalScoreAway is null)
@@ -60,14 +66,23 @@ public class ScoringService(AppDbContext db) : IScoringService
         var predictions = await db.Predictions
             .Where(p => p.FixtureId == fixtureId)
             .ToListAsync();
+        var since = await PreviousPointsSinceAsync(db);
 
         foreach (var p in predictions)
         {
-            p.PointsEarned = ScorePrediction(p, fixture);
+            p.PointsEarned = ScorePrediction(p, fixture, since.GetValueOrDefault(p.UserId));
             // Weekly standings add up points by the prediction's week.
             p.WeekId = fixture.WeekId;
         }
 
         await db.SaveChangesAsync();
     }
+
+    // When each player's previous points were first imported. CreatedAt, not UpdatedAt: re-importing
+    // the same table (say, to fix a name) must not move the cutoff and wipe later in-app points.
+    public static async Task<Dictionary<Guid, DateTime?>> PreviousPointsSinceAsync(AppDbContext db, CancellationToken ct = default) =>
+        await db.PreviousPoints.AsNoTracking()
+            .GroupBy(pp => pp.UserId)
+            .Select(g => new { UserId = g.Key, Since = g.Min(pp => pp.CreatedAt) })
+            .ToDictionaryAsync(x => x.UserId, x => (DateTime?)x.Since, ct);
 }

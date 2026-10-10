@@ -15,7 +15,7 @@ namespace OctopusPrediction.Api.Controllers;
 [ApiController]
 [Route("api/admin/previous-points")]
 [Authorize(Roles = "Admin")]
-public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
+public class AdminPreviousPointsController(AppDbContext db, PointsReconciler reconciler) : ControllerBase
 {
     private static readonly EmailAddressAttribute EmailValidator = new();
 
@@ -236,6 +236,9 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
         }
 
         await db.SaveChangesAsync();
+        // Previous points decide which in-app predictions count (ScoringService.ScorePrediction),
+        // so the standings are put right now rather than at the next 15-minute check.
+        await reconciler.ReconcileAsync(actor);
         return Ok(new PreviousPointsImportResult(false, true, 0, results, created));
     }
 
@@ -254,6 +257,7 @@ public class AdminPreviousPointsController(AppDbContext db) : ControllerBase
 
         db.PreviousPoints.Remove(entry);
         await db.SaveChangesAsync();
+        await reconciler.ReconcileAsync(actor);
         return Ok(new { message = "Previous points removed." });
     }
 

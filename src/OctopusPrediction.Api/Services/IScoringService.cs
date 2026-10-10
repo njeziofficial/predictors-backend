@@ -4,6 +4,8 @@ namespace OctopusPrediction.Api.Services;
 
 public interface IScoringService
 {
-    int ScorePrediction(Prediction prediction, Fixture fixture);
+    // previousPointsSince: when the player's carried-over points were first imported (see
+    // ScoringService.PreviousPointsSinceAsync); matches that kicked off before then score 0.
+    int ScorePrediction(Prediction prediction, Fixture fixture, DateTime? previousPointsSince = null);
     Task ScoreFixtureAsync(string fixtureId);
 }

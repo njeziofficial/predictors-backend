@@ -27,12 +27,14 @@ public class PointsReconciler(AppDbContext db, IScoringService scoring, ILogger<
     {
         var fixtures = await db.Fixtures.AsNoTracking().ToDictionaryAsync(f => f.Id, ct);
         var predictions = await db.Predictions.Include(p => p.User).ToListAsync(ct);
+        var previousPointsSince = await ScoringService.PreviousPointsSinceAsync(db, ct);
 
         var corrections = new List<PointsCorrection>();
         foreach (var p in predictions)
         {
             if (!fixtures.TryGetValue(p.FixtureId, out var fixture)) continue;
-            var points = scoring.ScorePrediction(p, fixture);
+            var since = previousPointsSince.GetValueOrDefault(p.UserId);
+            var points = scoring.ScorePrediction(p, fixture, since);
             if (p.PointsEarned == points && p.WeekId == fixture.WeekId) continue;
 
             corrections.Add(new PointsCorrection(
@@ -43,7 +45,7 @@ public class PointsReconciler(AppDbContext db, IScoringService scoring, ILogger<
                 AuditLogger.Log(db, subject: p.User, actor: actor, action: "PointsCorrected",
                     field: $"{fixture.HomeTeam} v {fixture.AwayTeam}".Truncate(50),
                     previousValue: p.PointsEarned.ToString(), newValue: points.ToString(),
-                    details: Describe(p, fixture).Truncate(500));
+                    details: Describe(p, fixture, since).Truncate(500));
             if (p.WeekId != fixture.WeekId)
                 AuditLogger.Log(db, subject: p.User, actor: actor, action: "PredictionWeekCorrected",
                     field: $"{fixture.HomeTeam} v {fixture.AwayTeam}".Truncate(50),
@@ -63,13 +65,16 @@ public class PointsReconciler(AppDbContext db, IScoringService scoring, ILogger<
         return corrections;
     }
 
-    private static string Describe(Prediction p, Fixture f)
+    private static string Describe(Prediction p, Fixture f, DateTime? previousPointsSince)
     {
         var pick = p.Outcome == OutcomeType.CorrectScore ? $"score {p.HomeGoals}-{p.AwayGoals}" : p.Outcome.ToString();
         var result = f.Status == FixtureStatus.Ended && f.FinalScoreHome is not null
             ? $"ended {f.FinalScoreHome}-{f.FinalScoreAway}"
             : f.Status.ToString();
-        return $"Predicted {pick}; match {result}";
+        var covered = previousPointsSince is { } since && f.Kickoff < since
+            ? $"; already counted in previous points imported {since:yyyy-MM-dd}"
+            : "";
+        return $"Predicted {pick}; match {result}{covered}";
     }
 }
 
