@@ -11,6 +11,7 @@ internal class LiveScraperBackgroundService(
     IOptions<LiveScraperSettings> options,
     IEnumerable<IMatchSource> sources,
     IServiceScopeFactory scopeFactory,
+    SourceGuard guard,
     ILogger<LiveScraperBackgroundService> logger)
     : BackgroundService
 {
@@ -27,6 +28,12 @@ internal class LiveScraperBackgroundService(
     // Between match windows nothing changes but new fixtures appearing, so scrape rarely and
     // don't keep Chrome running in between.
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMinutes(30);
+    // Inside a match window but before kickoff (or between two matches), scores can't change, so
+    // there's no need to load the page every PollIntervalSeconds: every request saved is one less
+    // reason for a site to notice us. Full speed resumes this long before the next kickoff.
+    private static readonly TimeSpan QuietWindowPollInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan KickoffSoon = TimeSpan.FromMinutes(5);
+    private bool _allSourcesCoolingLogged;
     // Chrome's memory creeps up over hours of reloading the same page; start a fresh one now and then.
     private const int RecycleBrowserAfterCycles = 60;
 
@@ -113,7 +120,7 @@ internal class LiveScraperBackgroundService(
                         logger.LogError(ex, "[LiveScraper] Scrape cycle failed");
                     }
 
-                    var (inMatchWindow, nextWindowStart) = await GetMatchScheduleAsync(ct);
+                    var (inMatchWindow, matchActive, nextWindowStart) = await GetMatchScheduleAsync(ct);
                     if (inMatchWindow != _wasInMatchWindow)
                     {
                         logger.LogInformation(inMatchWindow
@@ -130,17 +137,22 @@ internal class LiveScraperBackgroundService(
                         cycles = 0;
                     }
 
-                    var delay = TimeSpan.FromSeconds(settings.PollIntervalSeconds);
+                    var pollInterval = TimeSpan.FromSeconds(settings.PollIntervalSeconds);
+                    var delay = pollInterval;
                     if (!inMatchWindow)
                     {
                         // Sleep until the idle poll or the next match window, whichever is sooner.
                         delay = IdlePollInterval;
                         if (nextWindowStart is { } next && next - DateTime.UtcNow < delay)
                             delay = next - DateTime.UtcNow;
-                        if (delay < TimeSpan.FromSeconds(settings.PollIntervalSeconds))
-                            delay = TimeSpan.FromSeconds(settings.PollIntervalSeconds);
                     }
-                    await Task.Delay(delay, ct);
+                    else if (!matchActive && QuietWindowPollInterval > delay)
+                    {
+                        delay = QuietWindowPollInterval;
+                    }
+                    if (delay < pollInterval) delay = pollInterval;
+                    // A request every exactly-60s is an obvious bot; a varying gap looks like a visitor.
+                    await Task.Delay(SourceGuard.Jitter(delay), ct);
                 }
             }
             catch (OperationCanceledException) { break; }
@@ -198,8 +210,10 @@ internal class LiveScraperBackgroundService(
         });
     }
 
-    // Whether a match is on (or about to start), and when the next one's window opens.
-    private async Task<(bool InWindow, DateTime? NextStart)> GetMatchScheduleAsync(CancellationToken ct)
+    // Whether we're in a match window; whether a match is actually in play (or due to kick off
+    // within KickoffSoon, or past its kickoff without being seen to start); and when the next
+    // window opens.
+    private async Task<(bool InWindow, bool MatchActive, DateTime? NextStart)> GetMatchScheduleAsync(CancellationToken ct)
     {
         try
         {
@@ -207,13 +221,17 @@ internal class LiveScraperBackgroundService(
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var now = DateTime.UtcNow;
             var windows = await MatchWindows.ForMatchesAsync(db, now, ct);
-            return (MatchWindows.Contains(windows, now), windows.FirstOrDefault(w => w.Start > now)?.Start);
+            var active = await db.Fixtures.AsNoTracking().AnyAsync(f =>
+                f.Status == FixtureStatus.Live || f.Status == FixtureStatus.HalfTime
+                || (f.Status == FixtureStatus.PreMatch && f.Kickoff <= now + KickoffSoon
+                    && f.Kickoff > now - MatchWindows.AfterKickoff), ct);
+            return (MatchWindows.Contains(windows, now), active, windows.FirstOrDefault(w => w.Start > now)?.Start);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             // Can't tell: keep polling at full speed rather than miss a match.
             logger.LogWarning(ex, "[LiveScraper] Couldn't read the match schedule");
-            return (true, null);
+            return (true, true, null);
         }
     }
 
@@ -249,8 +267,9 @@ internal class LiveScraperBackgroundService(
         return await ScraperSettingsStore.GetOrCreateAsync(db, _defaults, ct);
     }
 
-    // Tries this poll's sources in turn (one in Single mode; see SourcePlan) and syncs the
-    // first that returns matches. If none does, the poll is skipped and retried next interval.
+    // Tries this poll's sources in turn (one in Single mode; see SourcePlan), skipping any that
+    // SourceGuard is resting, and syncs the first that returns matches. If none does, the poll is
+    // skipped and retried next interval.
     private async Task ScrapeAndSyncAsync(IBrowser browser, ScraperSettings settings, CancellationToken ct)
     {
         var plan = SourcePlan.ForPoll(_sources, settings, _poll++);
@@ -258,7 +277,19 @@ internal class LiveScraperBackgroundService(
             logger.LogWarning("[LiveScraper] Unknown source {SourceName} — falling back to {Fallback}",
                 settings.SourceName, plan[0].Name);
 
-        foreach (var source in plan)
+        var usable = plan.Where(s => !guard.IsCooling(s.Name, DateTime.UtcNow)).ToList();
+        if (usable.Count == 0)
+        {
+            if (!_allSourcesCoolingLogged)
+                logger.LogWarning("[LiveScraper] Every source is resting after being refused ({Sources}); next try at {Until:u}. " +
+                    "Fallback or Rotate with more sources keeps scores coming while one rests.",
+                    string.Join(", ", plan.Select(s => s.Name)), plan.Min(s => guard.CoolingUntil(s.Name)));
+            _allSourcesCoolingLogged = true;
+            return;
+        }
+        _allSourcesCoolingLogged = false;
+
+        foreach (var source in usable)
         {
             var matches = await ScrapeSourceAsync(browser, source, ct);
             if (matches.Length == 0) continue;
@@ -268,31 +299,109 @@ internal class LiveScraperBackgroundService(
             return;
         }
 
-        if (plan.Count > 1)
+        if (usable.Count > 1)
             logger.LogWarning("[LiveScraper] No source returned matches this cycle ({Sources})",
-                string.Join(", ", plan.Select(s => s.Name)));
+                string.Join(", ", usable.Select(s => s.Name)));
     }
 
+    // Titles of the "checking your browser" / "access denied" pages bot protection serves
+    // (Cloudflare, Akamai, PerimeterX, DataDome and the like) instead of the real page.
+    private static readonly string[] BotCheckTitles =
+    [
+        "just a moment", "attention required", "access denied", "verify you are human", "are you a robot",
+        "captcha", "pardon our interruption", "request blocked", "too many requests", "forbidden",
+    ];
+
     // A failed or empty scrape comes back as no matches, so the caller can move to the next source.
+    // The outcome goes to SourceGuard, which rests a source that is refusing us.
     private async Task<ScrapedMatchDto[]> ScrapeSourceAsync(IBrowser browser, IMatchSource source, CancellationToken ct)
     {
         await using var page = await browser.NewPageAsync();
         await BlockUnneededRequestsAsync(page, blockStylesheets: source.Name == "Flashscore");
-        await page.SetUserAgentAsync(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        // Look like the desktop Chrome this actually is: the browser's own version (a fixed,
+        // ageing version string stands out more every month), without the "Headless" marker,
+        // with the language and screen size an ordinary visitor sends.
+        await page.SetUserAgentAsync((await browser.GetUserAgentAsync()).Replace("HeadlessChrome", "Chrome"));
+        await page.SetExtraHttpHeadersAsync(new Dictionary<string, string> { ["Accept-Language"] = "en-GB,en;q=0.9" });
+        await page.SetViewportAsync(new ViewPortOptions { Width = 1366, Height = 768 });
 
+        // The site's answer to each page the source opens: a refusal shows up here even when the
+        // source just sees an empty page.
+        string? refusal = null;
+        TimeSpan? retryAfter = null;
+        page.Response += (_, e) =>
+        {
+            var response = e.Response;
+            if (!response.Request.IsNavigationRequest || response.Frame != page.MainFrame) return;
+            if ((int)response.Status is 403 or 429 or 503)
+            {
+                refusal = $"HTTP {(int)response.Status}";
+                retryAfter = ParseRetryAfter(response.Headers);
+            }
+        };
+
+        ScrapedMatchDto[] matches;
+        Exception? error = null;
         try
         {
-            var matches = await source.ScrapeAsync(page, ct);
-            if (matches.Length == 0)
-                logger.LogWarning("[LiveScraper] {Source} returned no matches this cycle", source.Name);
-            return matches;
+            matches = await source.ScrapeAsync(page, ct);
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            logger.LogWarning(ex, "[LiveScraper] {Source} failed this cycle", source.Name);
-            return [];
+            matches = [];
+            error = ex;
         }
+
+        if (matches.Length == 0 && refusal is null)
+            refusal = await BotCheckTitleAsync(page);
+
+        var now = DateTime.UtcNow;
+        if (refusal is not null)
+        {
+            var until = guard.RecordBlocked(source.Name, refusal, retryAfter, now);
+            logger.LogWarning("[LiveScraper] {Source} refused the scraper ({Reason}) — leaving it alone until {Until:u}",
+                source.Name, refusal, until);
+        }
+        else if (matches.Length == 0)
+        {
+            var problem = error is null ? "No matches on the page" : error.GetType().Name;
+            if (error is null)
+                logger.LogWarning("[LiveScraper] {Source} returned no matches this cycle", source.Name);
+            else
+                logger.LogWarning(error, "[LiveScraper] {Source} failed this cycle", source.Name);
+            if (guard.RecordFailure(source.Name, problem, now) is { } until)
+                logger.LogWarning("[LiveScraper] {Source} keeps failing — resting it until {Until:u}", source.Name, until);
+        }
+        else
+        {
+            guard.RecordSuccess(source.Name);
+        }
+        return matches;
+    }
+
+    private static async Task<string?> BotCheckTitleAsync(IPage page)
+    {
+        try
+        {
+            var title = (await page.GetTitleAsync())?.Trim() ?? "";
+            return BotCheckTitles.Any(t => title.Contains(t, StringComparison.OrdinalIgnoreCase))
+                ? $"Bot check: \"{title}\""
+                : null;
+        }
+        catch
+        {
+            return null; // The page closed or crashed; the failure is already recorded.
+        }
+    }
+
+    // Retry-After is either a number of seconds or an HTTP date.
+    private static TimeSpan? ParseRetryAfter(IDictionary<string, string>? headers)
+    {
+        var value = headers?.FirstOrDefault(h => h.Key.Equals("retry-after", StringComparison.OrdinalIgnoreCase)).Value;
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (int.TryParse(value, out var seconds)) return TimeSpan.FromSeconds(seconds);
+        if (DateTimeOffset.TryParse(value, out var at)) return at - DateTimeOffset.UtcNow;
+        return null;
     }
 
     private async Task SyncAsync(ScrapedMatchDto[] matches, string competition, CancellationToken ct)

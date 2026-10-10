@@ -18,7 +18,8 @@ public class AdminController(
     AppDbContext db,
     IOptions<LiveScraperSettings> defaults,
     IOptions<TwilioSettings> twilio,
-    IEnumerable<IMatchSource> sources) : ControllerBase
+    IEnumerable<IMatchSource> sources,
+    SourceGuard guard) : ControllerBase
 {
     private readonly IReadOnlyList<string> _sourceNames = [.. sources.Select(s => s.Name)];
     private readonly IReadOnlyList<string> _roundSources = [.. sources.Where(s => s.ProvidesRounds).Select(s => s.Name)];
@@ -208,8 +209,11 @@ public class AdminController(
         var lastScrapedAt = await db.Fixtures.MaxAsync(f => (DateTime?)f.UpdatedAt);
         var remindersConfigured = !string.IsNullOrWhiteSpace(twilio.Value.AccountSid)
             && !string.IsNullOrWhiteSpace(twilio.Value.AuthToken);
+        var sourceProblems = guard.Snapshot()
+            .Select(h => new SourceHealthDto(h.Name, h.Failures, h.CoolingUntil > DateTime.UtcNow ? h.CoolingUntil : null, h.LastProblem))
+            .ToList();
         return Ok(new AdminStatusDto(lastScrapedAt, settings.Enabled, remindersConfigured, settings.PredictionsLocked,
-            settings.RegistrationClosed));
+            settings.RegistrationClosed, sourceProblems));
     }
 
     private ScraperSettingsDto ToDto(ScraperSettings s) =>

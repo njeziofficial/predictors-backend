@@ -117,6 +117,8 @@ builder.Services.AddSingleton<IMatchSource, WorldFootballSource>();
 builder.Services.AddSingleton<IMatchSource, EspnSource>();
 builder.Services.AddSingleton<IMatchSource, FotMobSource>();
 builder.Services.AddSingleton<IMatchSource, FoxSportsSource>();
+// Rests a source that has started refusing the scraper; shown on the admin status card.
+builder.Services.AddSingleton<SourceGuard>();
 builder.Services.AddHostedService<LiveScraperBackgroundService>();
 
 // ── Prediction Reminders (Twilio) ────────────────────────────────────────────

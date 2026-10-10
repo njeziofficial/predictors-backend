@@ -23,6 +23,10 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
     private readonly Dictionary<string, string> _roundById = new();
     // Match pages to open per poll for rounds the fixtures page didn't have; the rest wait.
     private const int MaxMatchPageLookups = 4;
+    // A round the lookup couldn't find is tried again no sooner than this: otherwise every poll
+    // would open up to five extra pages, five times the requests of a normal poll.
+    private static readonly TimeSpan RoundLookupRetry = TimeSpan.FromMinutes(10);
+    private DateTime _lastRoundLookupAt = DateTime.MinValue;
 
     // Flashscore's 2026 frontend rewrite ("wcl-*" design system) renamed the old BEM
     // classes: event__participant--home/away -> event__homeParticipant/awayParticipant,
@@ -121,7 +125,8 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
             .Where(m => { if (_roundById.TryGetValue(m.Id!, out var r)) m.Round = r; return m.Round is null; })
             .ToList();
 
-        if (Missing().Count == 0) return;
+        if (Missing().Count == 0 || DateTime.UtcNow - _lastRoundLookupAt < RoundLookupRetry) return;
+        _lastRoundLookupAt = DateTime.UtcNow;
 
         await page.GoToAsync(new Uri(new Uri(_url.TrimEnd('/') + "/"), "fixtures/").ToString(),
             new NavigationOptions { WaitUntil = [WaitUntilNavigation.Load], Timeout = 30_000 });
@@ -153,7 +158,7 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
 
         var stillMissing = Missing();
         if (stillMissing.Count > 0)
-            logger.LogWarning("[Flashscore] No round yet for {Matches}; trying again next poll",
+            logger.LogWarning("[Flashscore] No round yet for {Matches}; trying again in 10 minutes",
                 string.Join(", ", stillMissing.Select(m => $"{m.Home} v {m.Away}")));
     }
 }
