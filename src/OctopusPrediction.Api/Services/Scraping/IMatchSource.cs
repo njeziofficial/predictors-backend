@@ -3,14 +3,17 @@ using PuppeteerSharp;
 namespace OctopusPrediction.Api.Services.Scraping;
 
 /// <summary>
-/// One scrapeable site that can produce a round-up of La Liga matches. The background
-/// service round-robins which source leads each poll and falls through the rest in that
-/// rotated order until one returns a non-empty result, so a DOM change or block on one
-/// site doesn't stop syncing and no single site is hit on every cycle.
+/// One scrapeable site that can produce a round-up of La Liga matches. Which sources the
+/// background service reads, and in what order, is the system user's choice in admin settings
+/// (see SourcePlan).
 /// </summary>
 public interface IMatchSource
 {
     string Name { get; }
+
+    // Whether the source says which round a match belongs to. Only these can create new
+    // fixtures (a fixture needs a week); the others only update fixtures that already exist.
+    bool ProvidesRounds { get; }
 
     Task<ScrapedMatchDto[]> ScrapeAsync(IPage page, CancellationToken ct);
 }

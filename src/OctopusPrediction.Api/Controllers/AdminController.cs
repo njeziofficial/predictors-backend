@@ -21,6 +21,7 @@ public class AdminController(
     IEnumerable<IMatchSource> sources) : ControllerBase
 {
     private readonly IReadOnlyList<string> _sourceNames = [.. sources.Select(s => s.Name)];
+    private readonly IReadOnlyList<string> _roundSources = [.. sources.Where(s => s.ProvidesRounds).Select(s => s.Name)];
 
     [HttpGet("settings")]
     [RequirePermission(Permissions.SettingsView)]
@@ -34,16 +35,63 @@ public class AdminController(
     [RequirePermission(Permissions.SettingsManage)]
     public async Task<IActionResult> UpdateSettings(UpdateScraperSettingsRequest request)
     {
-        if (!_sourceNames.Contains(request.SourceName, StringComparer.OrdinalIgnoreCase))
-            return BadRequest(new { message = $"Unknown source: {request.SourceName}" });
-
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
         settings.Enabled = request.Enabled;
         settings.PollIntervalSeconds = request.PollIntervalSeconds;
         settings.Competition = request.Competition;
-        settings.SourceName = request.SourceName;
         settings.ReminderEnabled = request.ReminderEnabled;
         settings.ReminderHoursBeforeFirstGame = request.ReminderHoursBeforeFirstGame;
+        await db.SaveChangesAsync();
+        return Ok(ToDto(settings));
+    }
+
+    // Which site(s) live scores come from. Kept with the system user: a bad choice can stop new
+    // weeks appearing or feed every player the wrong scores.
+    [HttpPut("scraper-source")]
+    [SystemUserOnly]
+    public async Task<IActionResult> SetScraperSource(SetScraperSourceRequest request)
+    {
+        var mode = SourceModes.Normalize(request.Mode);
+        if (mode is null)
+            return BadRequest(new { message = $"Unknown source mode: {request.Mode}" });
+
+        string? Known(string name) =>
+            _sourceNames.FirstOrDefault(s => string.Equals(s, name?.Trim(), StringComparison.OrdinalIgnoreCase));
+
+        var sourceName = Known(request.SourceName);
+        if (sourceName is null)
+            return BadRequest(new { message = $"Unknown source: {request.SourceName}" });
+
+        var unknown = request.SourceOrder.Where(n => Known(n) is null).ToList();
+        if (unknown.Count > 0)
+            return BadRequest(new { message = $"Unknown source: {string.Join(", ", unknown)}" });
+
+        var order = request.SourceOrder.Select(n => Known(n)!).Distinct().ToList();
+        if (mode != SourceModes.Single && order.Count < 2)
+            return BadRequest(new { message = $"{mode} needs at least two sources." });
+
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var orderText = SourcePlan.FormatOrder(order);
+        var changes = new List<(string Field, string Previous, string New)>
+        {
+            ("Source mode", settings.SourceMode, mode),
+            ("Source", settings.SourceName, sourceName),
+            ("Source order", settings.SourceOrder, orderText),
+        }.Where(c => c.Previous != c.New).ToList();
+
+        settings.SourceMode = mode;
+        settings.SourceName = sourceName;
+        settings.SourceOrder = orderText;
+
+        if (changes.Count > 0)
+        {
+            var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+            var actor = await db.Users.FirstOrDefaultAsync(u => u.Id == currentUserId);
+            foreach (var (field, previous, value) in changes)
+                AuditLogger.Log(db, subject: null, actor: actor, action: "ScraperSourceChanged",
+                    field: field, previousValue: previous, newValue: value);
+        }
+
         await db.SaveChangesAsync();
         return Ok(ToDto(settings));
     }
@@ -165,7 +213,9 @@ public class AdminController(
     }
 
     private ScraperSettingsDto ToDto(ScraperSettings s) =>
-        new(s.Enabled, s.PollIntervalSeconds, s.Competition, s.SourceName, _sourceNames, s.PredictionsLocked, s.RegistrationClosed,
+        new(s.Enabled, s.PollIntervalSeconds, s.Competition, s.SourceName, _sourceNames,
+            SourceModes.Normalize(s.SourceMode) ?? SourceModes.Single, SourcePlan.ParseOrder(s.SourceOrder), _roundSources,
+            s.PredictionsLocked, s.RegistrationClosed,
             s.ReminderEnabled, s.ReminderHoursBeforeFirstGame,
             new PredictionRulesDto(s.AllowPartialPredictions, s.PredictionsFinal, s.LockWeekAtFirstKickoff,
                 s.AllowLatePredictions));

@@ -21,6 +21,8 @@ internal class LiveScraperBackgroundService(
     // full Chrome. If it can't be downloaded or launched, the scraper falls back to full Chrome.
     private bool _useHeadlessShell = true;
     private bool? _wasInMatchWindow;
+    // Counts polls, so Rotate mode leads with a different source each time (SourcePlan.ForPoll).
+    private int _poll;
 
     // Between match windows nothing changes but new fixtures appearing, so scrape rarely and
     // don't keep Chrome running in between.
@@ -99,7 +101,7 @@ internal class LiveScraperBackgroundService(
 
                     try
                     {
-                        await ScrapeAndSyncAsync(browser, settings.Competition, settings.SourceName, ct);
+                        await ScrapeAndSyncAsync(browser, settings, ct);
                     }
                     catch (PuppeteerException pex) when (!ct.IsCancellationRequested)
                     {
@@ -117,7 +119,7 @@ internal class LiveScraperBackgroundService(
                         logger.LogInformation(inMatchWindow
                                 ? "[LiveScraper] Match window: polling {Source} every {Interval}s"
                                 : "[LiveScraper] No match on: polling {Source} every 30 minutes with Chrome closed in between",
-                            settings.SourceName, settings.PollIntervalSeconds);
+                            SourcePlan.Describe(settings), settings.PollIntervalSeconds);
                         _wasInMatchWindow = inMatchWindow;
                     }
 
@@ -247,43 +249,54 @@ internal class LiveScraperBackgroundService(
         return await ScraperSettingsStore.GetOrCreateAsync(db, _defaults, ct);
     }
 
-    // Scrapes the single admin-selected source only — no rotation or fallthrough to the
-    // other registered sources. If that source comes up empty or errors, the cycle is
-    // skipped and retried at the next poll interval.
-    private async Task ScrapeAndSyncAsync(IBrowser browser, string competition, string sourceName, CancellationToken ct)
+    // Tries this poll's sources in turn (one in Single mode; see SourcePlan) and syncs the
+    // first that returns matches. If none does, the poll is skipped and retried next interval.
+    private async Task ScrapeAndSyncAsync(IBrowser browser, ScraperSettings settings, CancellationToken ct)
     {
-        var source = _sources.FirstOrDefault(s => string.Equals(s.Name, sourceName, StringComparison.OrdinalIgnoreCase));
-        if (source is null)
-        {
-            source = _sources[0];
+        var plan = SourcePlan.ForPoll(_sources, settings, _poll++);
+        if (plan.Count == 1 && !string.Equals(plan[0].Name, settings.SourceName, StringComparison.OrdinalIgnoreCase))
             logger.LogWarning("[LiveScraper] Unknown source {SourceName} — falling back to {Fallback}",
-                sourceName, source.Name);
+                settings.SourceName, plan[0].Name);
+
+        foreach (var source in plan)
+        {
+            var matches = await ScrapeSourceAsync(browser, source, ct);
+            if (matches.Length == 0) continue;
+
+            logger.LogDebug("[LiveScraper] Scraped {Count} matches from {Source}", matches.Length, source.Name);
+            await SyncAsync(matches, settings.Competition, ct);
+            return;
         }
 
+        if (plan.Count > 1)
+            logger.LogWarning("[LiveScraper] No source returned matches this cycle ({Sources})",
+                string.Join(", ", plan.Select(s => s.Name)));
+    }
+
+    // A failed or empty scrape comes back as no matches, so the caller can move to the next source.
+    private async Task<ScrapedMatchDto[]> ScrapeSourceAsync(IBrowser browser, IMatchSource source, CancellationToken ct)
+    {
         await using var page = await browser.NewPageAsync();
         await BlockUnneededRequestsAsync(page, blockStylesheets: source.Name == "Flashscore");
         await page.SetUserAgentAsync(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-        ScrapedMatchDto[] matches;
         try
         {
-            matches = await source.ScrapeAsync(page, ct);
+            var matches = await source.ScrapeAsync(page, ct);
+            if (matches.Length == 0)
+                logger.LogWarning("[LiveScraper] {Source} returned no matches this cycle", source.Name);
+            return matches;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             logger.LogWarning(ex, "[LiveScraper] {Source} failed this cycle", source.Name);
-            return;
+            return [];
         }
+    }
 
-        if (matches.Length == 0)
-        {
-            logger.LogWarning("[LiveScraper] {Source} returned no matches this cycle", source.Name);
-            return;
-        }
-
-        logger.LogDebug("[LiveScraper] Scraped {Count} matches from {Source}", matches.Length, source.Name);
-
+    private async Task SyncAsync(ScrapedMatchDto[] matches, string competition, CancellationToken ct)
+    {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var scoring = scope.ServiceProvider.GetRequiredService<IScoringService>();
@@ -327,9 +340,13 @@ internal class LiveScraperBackgroundService(
         var wasEnded = fixture?.Status == FixtureStatus.Ended;
         var (oldFinalHome, oldFinalAway) = (fixture?.FinalScoreHome, fixture?.FinalScoreAway);
 
+        // A bare "HH:mm" is only a guess at the date (see ParseKickoff), so it's the last resort.
+        var scrapedKickoff = ParseKickoff(m.Time);
+        var datedKickoff = scrapedKickoff is { HasDate: true } k ? k.Utc : (DateTime?)null;
+
         // Flashscore marks a row finished by the absence of its "live" marker, which can drop
         // out for a moment mid-match. Scoring that would award points for a half-time score.
-        var kickoffForCheck = ParseKickoff(m.Time) ?? fixture?.Kickoff;
+        var kickoffForCheck = datedKickoff ?? fixture?.Kickoff ?? scrapedKickoff?.Utc;
         if (newStatus == FixtureStatus.Ended && kickoffForCheck is { } ko && DateTime.UtcNow < ko + MinMatchDuration)
         {
             var keep = DateTime.UtcNow < ko ? FixtureStatus.PreMatch
@@ -348,6 +365,27 @@ internal class LiveScraperBackgroundService(
             return null;
         }
 
+        // A team plays once a round. If the week already has a match for either team, this is
+        // that match under a spelling TeamNameNormalizer doesn't know yet: don't add it twice.
+        if (fixture is null && await FindSameRoundMatchAsync(db, weekId, m, ct) is { } existing)
+        {
+            logger.LogWarning("[LiveScraper] Not adding {Home} vs {Away}: {Week} already has {ExistingHome} vs {ExistingAway}. " +
+                "If they're the same match, add the spelling to TeamNameNormalizer.",
+                m.Home, m.Away, weekId, existing.HomeTeam, existing.AwayTeam);
+            return null;
+        }
+
+        // Once a match has started or finished it never goes back to "not started". Sources that
+        // only mark "FT" (ESPN, WorldFootball) show a match in play as not started, which would
+        // otherwise reopen it and take its points away.
+        if (fixture is not null && newStatus == FixtureStatus.PreMatch
+            && fixture.Status is FixtureStatus.Live or FixtureStatus.HalfTime or FixtureStatus.Ended)
+        {
+            logger.LogDebug("[LiveScraper] Ignoring 'not started' for {Home} vs {Away}, already {Status}",
+                m.Home, m.Away, fixture.Status);
+            return null;
+        }
+
         if (hasRound && (fixture is null || fixture.WeekId == UnknownWeekId(competition)))
             await EnsureWeekAsync(db, addedWeeks, weekId, competition, m.Round, ct);
 
@@ -362,7 +400,7 @@ internal class LiveScraperBackgroundService(
                 WeekId = weekId,
                 HomeTeam = m.Home,
                 AwayTeam = m.Away,
-                Kickoff = ParseKickoff(m.Time) ?? DateTime.UtcNow,
+                Kickoff = scrapedKickoff?.Utc ?? DateTime.UtcNow,
                 Status = newStatus,
                 UpdatedAt = DateTime.UtcNow
             };
@@ -373,8 +411,9 @@ internal class LiveScraperBackgroundService(
         {
             fixture.Status = newStatus;
             fixture.UpdatedAt = DateTime.UtcNow;
-            var kickoff = ParseKickoff(m.Time);
-            if (kickoff.HasValue) fixture.Kickoff = kickoff.Value;
+            // Only a time that comes with its date may move a kickoff, which drives prediction
+            // locks: a bare "HH:mm" may be another day's match, or in the site's own time zone.
+            if (datedKickoff.HasValue) fixture.Kickoff = datedKickoff.Value;
         }
 
         var scoreHome = ParseScore(m.ScoreHome);
@@ -402,6 +441,17 @@ internal class LiveScraperBackgroundService(
         var resultChanged = isEnded != wasEnded
             || (isEnded && (fixture.FinalScoreHome != oldFinalHome || fixture.FinalScoreAway != oldFinalAway));
         return resultChanged ? fixtureId : null;
+    }
+
+    // A fixture in the week (saved, or added earlier this poll) involving either of m's teams.
+    private static async Task<Fixture?> FindSameRoundMatchAsync(
+        AppDbContext db, string weekId, ScrapedMatchDto m, CancellationToken ct)
+    {
+        string[] teams = [TeamNameNormalizer.Slug(m.Home), TeamNameNormalizer.Slug(m.Away)];
+        var inWeek = await db.Fixtures.Where(f => f.WeekId == weekId).ToListAsync(ct);
+        return inWeek.Concat(db.Fixtures.Local.Where(f => f.WeekId == weekId))
+            .FirstOrDefault(f => teams.Contains(TeamNameNormalizer.Slug(f.HomeTeam))
+                || teams.Contains(TeamNameNormalizer.Slug(f.AwayTeam)));
     }
 
     private async Task EnsureWeekAsync(
@@ -503,7 +553,10 @@ internal class LiveScraperBackgroundService(
     private static int? ParseScore(string? score) =>
         int.TryParse(score?.Trim(), out var v) ? v : null;
 
-    private static DateTime? ParseKickoff(string? time)
+    // HasDate is false for a bare "HH:mm", which is assumed to be today.
+    private readonly record struct ScrapedKickoff(DateTime Utc, bool HasDate);
+
+    private static ScrapedKickoff? ParseKickoff(string? time)
     {
         if (string.IsNullOrWhiteSpace(time) || time.Contains("'") || time is "HT" or "FT") return null;
 
@@ -514,15 +567,17 @@ internal class LiveScraperBackgroundService(
         // source can never be misread as an ISO timestamp and take this branch by accident.
         if (DateTimeOffset.TryParseExact(time, "yyyy-MM-ddTHH:mm:ssZ", null,
             System.Globalization.DateTimeStyles.AssumeUniversal, out var iso))
-            return iso.UtcDateTime;
+            return new ScrapedKickoff(iso.UtcDateTime, HasDate: true);
 
-        if (DateTime.TryParseExact(time,
-            ["HH:mm", "d.MM. HH:mm", "dd.MM. HH:mm"],
-            null, System.Globalization.DateTimeStyles.None, out var dt))
+        // Day and month, no year: this year.
+        if (DateTime.TryParseExact(time, ["d.MM. HH:mm", "dd.MM. HH:mm"],
+            null, System.Globalization.DateTimeStyles.None, out var dated))
+            return new ScrapedKickoff(DateTime.SpecifyKind(dated, DateTimeKind.Utc), HasDate: true);
+
+        if (DateTime.TryParseExact(time, "HH:mm", null, System.Globalization.DateTimeStyles.None, out var t))
         {
-            var today = DateTime.UtcNow;
-            if (dt.Year == 1) dt = new DateTime(today.Year, today.Month, today.Day, dt.Hour, dt.Minute, 0);
-            return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+            var today = DateTime.UtcNow.Date;
+            return new ScrapedKickoff(DateTime.SpecifyKind(today + t.TimeOfDay, DateTimeKind.Utc), HasDate: false);
         }
         return null;
     }

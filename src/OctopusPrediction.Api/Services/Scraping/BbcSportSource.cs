@@ -17,6 +17,7 @@ namespace OctopusPrediction.Api.Services.Scraping;
 internal sealed class BbcSportSource(ILogger<BbcSportSource> logger, IOptions<LiveScraperSettings> options) : IMatchSource
 {
     public string Name => "BBC Sport";
+    public bool ProvidesRounds => false;
 
     private const string DefaultBaseUrl = "https://www.bbc.com/sport/football/spanish-la-liga/scores-fixtures";
     private readonly string _baseUrl = options.Value.Sources.GetValueOrDefault("BbcSport", DefaultBaseUrl);

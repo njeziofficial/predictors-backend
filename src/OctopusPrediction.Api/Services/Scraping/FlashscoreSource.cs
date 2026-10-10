@@ -13,6 +13,7 @@ namespace OctopusPrediction.Api.Services.Scraping;
 internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOptions<LiveScraperSettings> options) : IMatchSource
 {
     public string Name => "Flashscore";
+    public bool ProvidesRounds => true;
 
     private const string DefaultUrl = "https://www.flashscore.com/football/spain/laliga/";
     private readonly string _url = options.Value.Sources.GetValueOrDefault("Flashscore", DefaultUrl);

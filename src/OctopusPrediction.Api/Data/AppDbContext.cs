@@ -74,6 +74,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             s.HasKey(x => x.Id);
             s.Property(x => x.Competition).HasMaxLength(100);
             s.Property(x => x.SourceName).HasMaxLength(50);
+            s.Property(x => x.SourceMode).HasMaxLength(20);
+            s.Property(x => x.SourceOrder).HasMaxLength(500);
         });
 
         mb.Entity<AuditLog>(a =>

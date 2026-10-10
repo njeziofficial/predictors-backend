@@ -17,6 +17,7 @@ namespace OctopusPrediction.Api.Services.Scraping;
 internal sealed class WorldFootballSource(ILogger<WorldFootballSource> logger, IOptions<LiveScraperSettings> options) : IMatchSource
 {
     public string Name => "WorldFootball";
+    public bool ProvidesRounds => true;
 
     private const string DefaultUrl = "https://www.worldfootball.net/competition/co97/spain-primera-division/all-matches/";
     private readonly string _url = options.Value.Sources.GetValueOrDefault("WorldFootball", DefaultUrl);

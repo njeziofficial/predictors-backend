@@ -20,6 +20,7 @@ namespace OctopusPrediction.Api.Services.Scraping;
 internal sealed class FoxSportsSource(ILogger<FoxSportsSource> logger, IOptions<LiveScraperSettings> options) : IMatchSource
 {
     public string Name => "Fox Sports";
+    public bool ProvidesRounds => false;
 
     private const string DefaultUrl = "https://www.foxsports.com/soccer/la-liga/scores";
     private readonly string _baseUrl = options.Value.Sources.GetValueOrDefault("FoxSports", DefaultUrl);

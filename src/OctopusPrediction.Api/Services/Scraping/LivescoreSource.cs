@@ -18,6 +18,7 @@ namespace OctopusPrediction.Api.Services.Scraping;
 internal sealed class LivescoreSource(ILogger<LivescoreSource> logger, IOptions<LiveScraperSettings> options) : IMatchSource
 {
     public string Name => "Livescore";
+    public bool ProvidesRounds => false;
 
     private const string DefaultBaseUrl = "https://www.livescore.com/en/football/spain/laliga";
     private readonly string _baseUrl = options.Value.Sources.GetValueOrDefault("Livescore", DefaultBaseUrl);

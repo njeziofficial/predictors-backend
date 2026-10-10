@@ -108,8 +108,8 @@ builder.Services.AddHostedService<PointsReconciliationBackgroundService>();
 
 // ── Live Score Scraper ────────────────────────────────────────────────────────
 builder.Services.Configure<LiveScraperSettings>(builder.Configuration.GetSection("LiveScoreScraper"));
-// Registration order sets the base rotation order — LiveScraperBackgroundService
-// round-robins which source leads each poll and falls through the rest in that order.
+// Which of these the scraper reads, and in what order, is set in admin settings (SourcePlan).
+// The first one registered is the last resort if the saved choice names no known source.
 builder.Services.AddSingleton<IMatchSource, FlashscoreSource>();
 builder.Services.AddSingleton<IMatchSource, LivescoreSource>();
 builder.Services.AddSingleton<IMatchSource, BbcSportSource>();
@@ -232,6 +232,14 @@ try
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"LockWeekAtFirstKickoff\" boolean NOT NULL DEFAULT false;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AllowLatePredictions\" boolean NOT NULL DEFAULT false;");
+        // Source modes. Same SQL as db/supabase/2026-10-10-scraper-source-modes.sql.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"SourceMode\" text NOT NULL DEFAULT 'Single';");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"SourceOrder\" text NOT NULL DEFAULT 'Flashscore';");
+        await db.Database.ExecuteSqlRawAsync(
+            "UPDATE \"ScraperSettings\" SET \"SourceOrder\" = \"SourceName\" " +
+            "WHERE \"SourceMode\" = 'Single' AND \"SourceOrder\" = 'Flashscore' AND \"SourceName\" <> 'Flashscore';");
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "PreviousPoints" (
                 "Id" uuid NOT NULL PRIMARY KEY,

@@ -7,6 +7,11 @@ public class ScraperSettings
     public int PollIntervalSeconds { get; set; } = 60;
     public string Competition { get; set; } = "La Liga";
     public string SourceName { get; set; } = "Flashscore";
+    // Single (SourceName only), Fallback or Rotate (both over SourceOrder): see SourceModes.
+    // The whole source choice is the system user's alone (AdminController.SetScraperSource).
+    public string SourceMode { get; set; } = "Single";
+    // Comma-separated source names for Fallback and Rotate, in order.
+    public string SourceOrder { get; set; } = "Flashscore";
     public bool PredictionsLocked { get; set; } = false;
     // When true, POST /api/auth/register is refused. Existing accounts can still log in, and the
     // system user can still create accounts from the admin CMS.

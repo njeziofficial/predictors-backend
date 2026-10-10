@@ -19,6 +19,7 @@ namespace OctopusPrediction.Api.Services.Scraping;
 internal sealed class EspnSource(ILogger<EspnSource> logger, IOptions<LiveScraperSettings> options) : IMatchSource
 {
     public string Name => "ESPN";
+    public bool ProvidesRounds => false;
 
     private const string DefaultUrl = "https://www.espn.com/soccer/schedule/_/league/esp.1";
     private readonly string _url = options.Value.Sources.GetValueOrDefault("Espn", DefaultUrl);

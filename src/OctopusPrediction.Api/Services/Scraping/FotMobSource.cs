@@ -16,6 +16,7 @@ namespace OctopusPrediction.Api.Services.Scraping;
 internal sealed class FotMobSource(ILogger<FotMobSource> logger, IOptions<LiveScraperSettings> options) : IMatchSource
 {
     public string Name => "FotMob";
+    public bool ProvidesRounds => true;
 
     // League id 87 = LaLiga.
     private const string DefaultUrl = "https://www.fotmob.com/leagues/87/matches/laliga";
