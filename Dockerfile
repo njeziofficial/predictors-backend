@@ -2,9 +2,8 @@ FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
 WORKDIR /app
 EXPOSE 8080
 
-# Shared libraries headless Chrome needs. The live scraper's PuppeteerSharp downloads Chrome
-# itself on first run (BrowserFetcher), but the slim aspnet image ships none of its system
-# dependencies, so without these the browser fails to launch (e.g. missing libgobject-2.0).
+# Shared libraries headless Chrome needs. The slim aspnet image ships none of them, so without
+# these the browser fails to launch (e.g. missing libgobject-2.0).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates fonts-liberation \
@@ -13,6 +12,20 @@ RUN apt-get update \
         libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
         libxfixes3 libxkbcommon0 libxrandr2 \
     && rm -rf /var/lib/apt/lists/*
+
+# The live scraper's Chrome, installed at build time. Render wipes the disk whenever the free
+# service sleeps or restarts, so a browser downloaded at runtime (BrowserFetcher) was fetched
+# again on every wake. The scraper still downloads one if this path is ever missing.
+# Same version PuppeteerSharp 20 downloads; bump both together.
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS chrome
+ARG CHROME_VERSION=128.0.6613.119
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+    && curl -fsSL -o /tmp/chrome.zip \
+        "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-headless-shell-linux64.zip" \
+    && unzip -q /tmp/chrome.zip -d /opt \
+    && mv /opt/chrome-headless-shell-linux64 /opt/chrome-headless-shell \
+    && rm /tmp/chrome.zip
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
@@ -27,5 +40,7 @@ RUN dotnet publish "OctopusPrediction.Api.csproj" -c Release -o /app/publish /p:
 
 FROM base AS final
 WORKDIR /app
+COPY --from=chrome /opt/chrome-headless-shell /opt/chrome-headless-shell
+ENV LiveScoreScraper__ChromeExecutablePath=/opt/chrome-headless-shell/chrome-headless-shell
 COPY --from=publish /app/publish .
 ENTRYPOINT ["dotnet", "OctopusPrediction.Api.dll"]

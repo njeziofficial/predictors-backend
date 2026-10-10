@@ -48,17 +48,25 @@ public class ScoringService(AppDbContext db) : IScoringService
         return prediction.Outcome == actual ? Points[prediction.Outcome] : 0;
     }
 
+    // Recalculates every prediction on the fixture from its current state, whatever that is: a
+    // fixture that's no longer Ended (or never was) gives 0, so points awarded for a wrong
+    // "finished" reading are taken back as soon as the fixture changes. Call it whenever a
+    // fixture's status, final score or week changes.
     public async Task ScoreFixtureAsync(string fixtureId)
     {
         var fixture = await db.Fixtures.FindAsync(fixtureId);
-        if (fixture?.Status != FixtureStatus.Ended) return;
+        if (fixture is null) return;
 
         var predictions = await db.Predictions
             .Where(p => p.FixtureId == fixtureId)
             .ToListAsync();
 
         foreach (var p in predictions)
+        {
             p.PointsEarned = ScorePrediction(p, fixture);
+            // Weekly standings add up points by the prediction's week.
+            p.WeekId = fixture.WeekId;
+        }
 
         await db.SaveChangesAsync();
     }

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -101,10 +102,21 @@ public class AdminFixturesController(AppDbContext db, IScoringService scoring) :
         fixture.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
-        if (status == FixtureStatus.Ended && request.FinalScoreHome.HasValue && request.FinalScoreAway.HasValue)
-            await scoring.ScoreFixtureAsync(id);
+        // Every edit: a status taken back from Ended must take its points back too, and a fixture
+        // moved to another week must take its predictions with it.
+        await scoring.ScoreFixtureAsync(id);
 
         return Ok(FixtureMappers.ToDto(fixture));
+    }
+
+    // Recalculates every prediction's points now and fixes any that are wrong (the same check
+    // that runs every 15 minutes). Returns what it changed; each change is also in the audit trail.
+    [HttpPost("points/recheck")]
+    public async Task<IActionResult> RecheckPoints([FromServices] PointsReconciler reconciler, CancellationToken ct)
+    {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var actor = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
+        return Ok(await reconciler.ReconcileAsync(actor, ct));
     }
 
     [HttpDelete("fixtures/{id}")]

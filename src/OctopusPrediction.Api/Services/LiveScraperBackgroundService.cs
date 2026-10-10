@@ -16,13 +16,40 @@ internal class LiveScraperBackgroundService(
 {
     private readonly LiveScraperSettings _defaults = options.Value;
     private readonly IReadOnlyList<IMatchSource> _sources = [.. sources];
-    private bool _chromiumReady;
+    private string? _executablePath;
+    // Chrome's "headless shell" build: the old lightweight headless mode, far less memory than
+    // full Chrome. If it can't be downloaded or launched, the scraper falls back to full Chrome.
+    private bool _useHeadlessShell = true;
+    private bool? _wasInMatchWindow;
 
-    private static readonly LaunchOptions _browserOpts = new()
-    {
-        Headless = true,
-        Args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-    };
+    // Between match windows nothing changes but new fixtures appearing, so scrape rarely and
+    // don't keep Chrome running in between.
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMinutes(30);
+    // Chrome's memory creeps up over hours of reloading the same page; start a fresh one now and then.
+    private const int RecycleBrowserAfterCycles = 60;
+
+    private static readonly string[] BrowserArgs =
+    [
+        "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+        "--no-first-run", "--mute-audio", "--disable-extensions",
+        // One renderer process for the page and its (ad) iframes instead of one per site.
+        "--disable-site-isolation-trials", "--renderer-process-limit=2",
+        // Puppeteer's own --disable-features list repeated, since a second flag replaces the first.
+        "--disable-features=site-per-process,IsolateOrigins,Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints",
+        "--blink-settings=imagesEnabled=false",
+    ];
+
+    // Nothing the scrapers read comes from these: they only cost memory and bandwidth.
+    private static readonly HashSet<ResourceType> BlockedResourceTypes =
+        [ResourceType.Image, ResourceType.Media, ResourceType.Font];
+
+    private static readonly string[] BlockedHosts =
+    [
+        "doubleclick.net", "googlesyndication.com", "googletagservices.com", "googletagmanager.com",
+        "google-analytics.com", "adservice.google", "amazon-adsystem.com", "criteo", "scorecardresearch.com",
+        "facebook.net", "hotjar", "taboola", "outbrain", "adnxs.com", "rubiconproject", "pubmatic",
+        "casalemedia", "teads", "quantserve", "moatads", "chartbeat",
+    ];
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -56,14 +83,7 @@ internal class LiveScraperBackgroundService(
             IBrowser? browser = null;
             try
             {
-                // Inside the try: a failed Chromium download (e.g. a network blip at startup) must
-                // only skip this attempt. Escaping ExecuteAsync would stop the whole host.
-                await EnsureChromiumReadyAsync();
-                logger.LogInformation("[LiveScraper] Polling {Source} every {Interval}s",
-                    settings.SourceName, settings.PollIntervalSeconds);
-
-                browser = await Puppeteer.LaunchAsync(_browserOpts);
-
+                var cycles = 0;
                 while (!ct.IsCancellationRequested)
                 {
                     settings = await LoadSettingsAsync(ct);
@@ -72,6 +92,10 @@ internal class LiveScraperBackgroundService(
                         logger.LogInformation("[LiveScraper] Disabled from admin settings — pausing");
                         break;
                     }
+
+                    // Inside the try: a failed Chromium download or launch (e.g. a network blip at
+                    // startup) must only skip this attempt. Escaping ExecuteAsync would stop the host.
+                    browser ??= await LaunchBrowserAsync();
 
                     try
                     {
@@ -87,7 +111,34 @@ internal class LiveScraperBackgroundService(
                         logger.LogError(ex, "[LiveScraper] Scrape cycle failed");
                     }
 
-                    await Task.Delay(TimeSpan.FromSeconds(settings.PollIntervalSeconds), ct);
+                    var (inMatchWindow, nextWindowStart) = await GetMatchScheduleAsync(ct);
+                    if (inMatchWindow != _wasInMatchWindow)
+                    {
+                        logger.LogInformation(inMatchWindow
+                                ? "[LiveScraper] Match window: polling {Source} every {Interval}s"
+                                : "[LiveScraper] No match on: polling {Source} every 30 minutes with Chrome closed in between",
+                            settings.SourceName, settings.PollIntervalSeconds);
+                        _wasInMatchWindow = inMatchWindow;
+                    }
+
+                    if (!inMatchWindow || ++cycles >= RecycleBrowserAfterCycles)
+                    {
+                        await browser.CloseAsync();
+                        browser = null;
+                        cycles = 0;
+                    }
+
+                    var delay = TimeSpan.FromSeconds(settings.PollIntervalSeconds);
+                    if (!inMatchWindow)
+                    {
+                        // Sleep until the idle poll or the next match window, whichever is sooner.
+                        delay = IdlePollInterval;
+                        if (nextWindowStart is { } next && next - DateTime.UtcNow < delay)
+                            delay = next - DateTime.UtcNow;
+                        if (delay < TimeSpan.FromSeconds(settings.PollIntervalSeconds))
+                            delay = TimeSpan.FromSeconds(settings.PollIntervalSeconds);
+                    }
+                    await Task.Delay(delay, ct);
                 }
             }
             catch (OperationCanceledException) { break; }
@@ -106,12 +157,87 @@ internal class LiveScraperBackgroundService(
         }
     }
 
-    private async Task EnsureChromiumReadyAsync()
+    private async Task<IBrowser> LaunchBrowserAsync()
     {
-        if (_chromiumReady) return;
-        logger.LogInformation("[LiveScraper] Downloading Chromium (first run only)...");
-        await new BrowserFetcher().DownloadAsync();
-        _chromiumReady = true;
+        if (_useHeadlessShell)
+        {
+            try
+            {
+                if (_executablePath is null && File.Exists(_defaults.ChromeExecutablePath))
+                {
+                    _executablePath = _defaults.ChromeExecutablePath;
+                    logger.LogInformation("[LiveScraper] Using the installed Chrome headless shell at {Path}", _executablePath);
+                }
+                return await LaunchAsync(SupportedBrowser.ChromeHeadlessShell, HeadlessMode.Shell);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "[LiveScraper] Chrome headless shell unavailable — falling back to full Chrome");
+                _useHeadlessShell = false;
+                _executablePath = null;
+            }
+        }
+        return await LaunchAsync(SupportedBrowser.Chrome, HeadlessMode.True);
+    }
+
+    private async Task<IBrowser> LaunchAsync(SupportedBrowser browser, HeadlessMode headless)
+    {
+        if (_executablePath is null)
+        {
+            logger.LogInformation("[LiveScraper] Downloading {Browser} (first run only)...", browser);
+            var installed = await new BrowserFetcher(browser).DownloadAsync();
+            _executablePath = installed.GetExecutablePath();
+        }
+        return await Puppeteer.LaunchAsync(new LaunchOptions
+        {
+            HeadlessMode = headless,
+            ExecutablePath = _executablePath,
+            Args = BrowserArgs,
+        });
+    }
+
+    // Whether a match is on (or about to start), and when the next one's window opens.
+    private async Task<(bool InWindow, DateTime? NextStart)> GetMatchScheduleAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTime.UtcNow;
+            var windows = await MatchWindows.ForMatchesAsync(db, now, ct);
+            return (MatchWindows.Contains(windows, now), windows.FirstOrDefault(w => w.Start > now)?.Start);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            // Can't tell: keep polling at full speed rather than miss a match.
+            logger.LogWarning(ex, "[LiveScraper] Couldn't read the match schedule");
+            return (true, null);
+        }
+    }
+
+    // Skips images, video, fonts and ad/analytics requests: none of it is read, all of it costs memory.
+    // Stylesheets too where that's been checked not to change what the scraper finds (Flashscore:
+    // same matches, ~40 MB less); other sources may lay out or lazy-load rows with CSS.
+    private static async Task BlockUnneededRequestsAsync(IPage page, bool blockStylesheets)
+    {
+        await page.SetRequestInterceptionAsync(true);
+        page.Request += async (_, e) =>
+        {
+            try
+            {
+                var host = Uri.TryCreate(e.Request.Url, UriKind.Absolute, out var uri) ? uri.Host : "";
+                if (BlockedResourceTypes.Contains(e.Request.ResourceType)
+                    || (blockStylesheets && e.Request.ResourceType == ResourceType.StyleSheet)
+                    || BlockedHosts.Any(host.Contains))
+                    await e.Request.AbortAsync();
+                else
+                    await e.Request.ContinueAsync();
+            }
+            catch
+            {
+                // The page closed or navigated away mid-request; nothing to do.
+            }
+        };
     }
 
     private async Task<ScraperSettings> LoadSettingsAsync(CancellationToken ct)
@@ -135,6 +261,7 @@ internal class LiveScraperBackgroundService(
         }
 
         await using var page = await browser.NewPageAsync();
+        await BlockUnneededRequestsAsync(page, blockStylesheets: source.Name == "Flashscore");
         await page.SetUserAgentAsync(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
@@ -162,47 +289,70 @@ internal class LiveScraperBackgroundService(
         var scoring = scope.ServiceProvider.GetRequiredService<IScoringService>();
 
         var addedWeeks = new HashSet<string>();
-        var newlyEnded = new List<string>();
+        var toScore = new List<string>();
 
         foreach (var m in matches)
         {
-            var endedId = await SyncMatchAsync(db, addedWeeks, m, competition, ct);
-            if (endedId is not null) newlyEnded.Add(endedId);
+            var changedId = await SyncMatchAsync(db, addedWeeks, m, competition, ct);
+            if (changedId is not null) toScore.Add(changedId);
         }
 
         await db.SaveChangesAsync(ct);
+        await RemoveEmptyUnknownWeekAsync(db, competition, ct);
 
-        foreach (var fId in newlyEnded)
+        foreach (var fId in toScore)
         {
             await scoring.ScoreFixtureAsync(fId);
-            logger.LogInformation("[LiveScraper] Predictions scored for ended fixture {Id}", fId);
+            logger.LogInformation("[LiveScraper] Predictions scored for fixture {Id}", fId);
         }
     }
 
-    // Returns the fixtureId if this poll is the first time the fixture reached Ended; null otherwise.
+    // A match can't be over sooner than this after kickoff (two halves and the break), so a
+    // "finished" reading before then is a source glitch, not a result.
+    private static readonly TimeSpan MinMatchDuration = TimeSpan.FromMinutes(100);
+
+    // Returns the fixtureId when its result changed (it ended, its final score changed, or it
+    // stopped being ended), so its predictions are scored again; null otherwise.
     private async Task<string?> SyncMatchAsync(
         AppDbContext db, HashSet<string> addedWeeks, ScrapedMatchDto m, string competition, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(m.Home) || string.IsNullOrWhiteSpace(m.Away)) return null;
 
         var fixtureId = BuildFixtureId(m.Home, m.Away);
+        var hasRound = !string.IsNullOrWhiteSpace(m.Round);
         var weekId = BuildWeekId(competition, m.Round);
         var newStatus = MapStatus(m);
 
-        if (!addedWeeks.Contains(weekId) && !await db.MatchWeeks.AnyAsync(w => w.Id == weekId, ct))
-        {
-            db.MatchWeeks.Add(new MatchWeek
-            {
-                Id = weekId,
-                Name = BuildWeekName(competition, m.Round),
-                Competition = competition
-            });
-            addedWeeks.Add(weekId);
-            logger.LogInformation("[LiveScraper] Created MatchWeek: {Id}", weekId);
-        }
-
         var fixture = await db.Fixtures.FindAsync([fixtureId], ct);
         var wasEnded = fixture?.Status == FixtureStatus.Ended;
+        var (oldFinalHome, oldFinalAway) = (fixture?.FinalScoreHome, fixture?.FinalScoreAway);
+
+        // Flashscore marks a row finished by the absence of its "live" marker, which can drop
+        // out for a moment mid-match. Scoring that would award points for a half-time score.
+        var kickoffForCheck = ParseKickoff(m.Time) ?? fixture?.Kickoff;
+        if (newStatus == FixtureStatus.Ended && kickoffForCheck is { } ko && DateTime.UtcNow < ko + MinMatchDuration)
+        {
+            var keep = DateTime.UtcNow < ko ? FixtureStatus.PreMatch
+                : fixture?.Status is FixtureStatus.HalfTime ? FixtureStatus.HalfTime
+                : FixtureStatus.Live;
+            logger.LogWarning("[LiveScraper] {Home} vs {Away} reported finished {Minutes:0} min after kickoff — treating it as {Status}",
+                m.Home, m.Away, (DateTime.UtcNow - ko).TotalMinutes, keep);
+            newStatus = keep;
+        }
+
+        // Without a round there's no week to put a new fixture in: leave it until a poll finds
+        // the round (FlashscoreSource looks it up), rather than invent a "Week ?".
+        if (fixture is null && !hasRound)
+        {
+            logger.LogDebug("[LiveScraper] Skipping new fixture {Home} vs {Away} until its round is known", m.Home, m.Away);
+            return null;
+        }
+
+        if (hasRound && (fixture is null || fixture.WeekId == UnknownWeekId(competition)))
+            await EnsureWeekAsync(db, addedWeeks, weekId, competition, m.Round, ct);
+
+        if (fixture is not null && hasRound && fixture.WeekId == UnknownWeekId(competition))
+            await MoveOutOfUnknownWeekAsync(db, fixture, weekId, ct);
 
         if (fixture is null)
         {
@@ -243,10 +393,55 @@ internal class LiveScraperBackgroundService(
             fixture.LiveScoreHome = scoreHome;
             fixture.LiveScoreAway = scoreAway;
             fixture.LiveMinute = ParseMinute(m.Stage);
+            // Back in play after a wrong "finished" reading: that result no longer stands.
+            fixture.FinalScoreHome = null;
+            fixture.FinalScoreAway = null;
         }
 
-        return newStatus == FixtureStatus.Ended && !wasEnded ? fixtureId : null;
+        var isEnded = newStatus == FixtureStatus.Ended;
+        var resultChanged = isEnded != wasEnded
+            || (isEnded && (fixture.FinalScoreHome != oldFinalHome || fixture.FinalScoreAway != oldFinalAway));
+        return resultChanged ? fixtureId : null;
     }
+
+    private async Task EnsureWeekAsync(
+        AppDbContext db, HashSet<string> addedWeeks, string weekId, string competition, string? round, CancellationToken ct)
+    {
+        if (addedWeeks.Contains(weekId) || await db.MatchWeeks.AnyAsync(w => w.Id == weekId, ct)) return;
+        db.MatchWeeks.Add(new MatchWeek
+        {
+            Id = weekId,
+            Name = BuildWeekName(competition, round),
+            Competition = competition
+        });
+        addedWeeks.Add(weekId);
+        logger.LogInformation("[LiveScraper] Created MatchWeek: {Id}", weekId);
+    }
+
+    // Older scrapes filed fixtures whose round wasn't on the page under "Week ?". Once the round
+    // is known, move the fixture and its predictions to the right week. Tracked changes, not a
+    // bulk update, so the save empties the cached weeks, predictions and leaderboard.
+    private async Task MoveOutOfUnknownWeekAsync(AppDbContext db, Fixture fixture, string weekId, CancellationToken ct)
+    {
+        logger.LogInformation("[LiveScraper] Moving {Home} vs {Away} from {From} to {To}",
+            fixture.HomeTeam, fixture.AwayTeam, fixture.WeekId, weekId);
+        fixture.WeekId = weekId;
+        foreach (var prediction in await db.Predictions.Where(p => p.FixtureId == fixture.Id).ToListAsync(ct))
+            prediction.WeekId = weekId;
+    }
+
+    // Drops "Week ?" once every fixture has been moved out of it (see MoveOutOfUnknownWeekAsync).
+    private async Task RemoveEmptyUnknownWeekAsync(AppDbContext db, string competition, CancellationToken ct)
+    {
+        var unknownWeekId = UnknownWeekId(competition);
+        var week = await db.MatchWeeks.FindAsync([unknownWeekId], ct);
+        if (week is null || await db.Fixtures.AnyAsync(f => f.WeekId == unknownWeekId, ct)) return;
+        db.MatchWeeks.Remove(week);
+        await db.SaveChangesAsync(ct);
+        logger.LogInformation("[LiveScraper] Removed empty MatchWeek {Id}", unknownWeekId);
+    }
+
+    private static string UnknownWeekId(string competition) => BuildWeekId(competition, null);
 
     // Team-name based (not source-specific-id based) so that whichever source syncs a
     // given match, it resolves to the same Fixture row instead of creating a duplicate.

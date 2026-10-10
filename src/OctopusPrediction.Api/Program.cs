@@ -103,6 +103,8 @@ builder.Services.AddSingleton<PresenceTracker>();
 // ── App Services ──────────────────────────────────────────────────────────────
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IScoringService, ScoringService>();
+builder.Services.AddScoped<PointsReconciler>();
+builder.Services.AddHostedService<PointsReconciliationBackgroundService>();
 
 // ── Live Score Scraper ────────────────────────────────────────────────────────
 builder.Services.Configure<LiveScraperSettings>(builder.Configuration.GetSection("LiveScoreScraper"));
