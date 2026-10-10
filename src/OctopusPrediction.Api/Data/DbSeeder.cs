@@ -38,6 +38,16 @@ public static class DbSeeder
                 await db.SaveChangesAsync();
                 logger.LogInformation("[DbSeeder] Marked existing admin {Email} as the system user", email);
             }
+
+            // Opt-in, because it overwrites any password changed in-app on every restart. Turn it
+            // on to sync the configured password once, then turn it off again.
+            if (config.GetValue<bool>("SeedAdmin:ResetPassword")
+                && !BCrypt.Net.BCrypt.Verify(password, existing.PasswordHash))
+            {
+                existing.PasswordHash = BCrypt.Net.BCrypt.HashPassword(password);
+                await db.SaveChangesAsync();
+                logger.LogWarning("[DbSeeder] Reset system admin {Email} password from SeedAdmin:Password", email);
+            }
             return;
         }
 
