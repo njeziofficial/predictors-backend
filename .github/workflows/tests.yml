@@ -1,0 +1,26 @@
+name: Tests
+
+# Builds the API and runs the test suite (scoring rules among them) on every push and pull
+# request, so a change that marks predictions differently fails here before it's deployed.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore
+        run: dotnet restore tests/OctopusPrediction.Api.Tests/OctopusPrediction.Api.Tests.csproj
+
+      - name: Build
+        run: dotnet build tests/OctopusPrediction.Api.Tests/OctopusPrediction.Api.Tests.csproj --no-restore -c Release
+
+      - name: Test
+        run: dotnet test tests/OctopusPrediction.Api.Tests/OctopusPrediction.Api.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
