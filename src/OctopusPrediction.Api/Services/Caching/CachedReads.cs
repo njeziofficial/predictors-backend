@@ -98,6 +98,7 @@ public static class CachedReads
                 {
                     u.Id,
                     u.Name,
+                    u.WhatsAppName,
                     // Overall standings include points and correct scores carried over from before the app.
                     PreviousPoints = u.PreviousPoints.Sum(pp => pp.Points),
                     TotalPoints = u.Predictions.Sum(p => p.PointsEarned) + u.PreviousPoints.Sum(pp => pp.Points),
@@ -113,7 +114,7 @@ public static class CachedReads
                 .ToListAsync();
 
             return entries.Select((e, i) => new LeaderboardEntryDto(
-                e.Id.ToString(), e.Name, e.TotalPoints, e.PreviousPoints, e.CorrectScores, i + 1, e.LastSubmittedAt
+                e.Id.ToString(), e.Name, e.WhatsAppName, e.TotalPoints, e.PreviousPoints, e.CorrectScores, i + 1, e.LastSubmittedAt
             )).ToList();
         });
 
@@ -125,6 +126,7 @@ public static class CachedReads
                 {
                     u.Id,
                     u.Name,
+                    u.WhatsAppName,
                     TotalPoints = u.Predictions
                         .Where(p => p.WeekId == weekId)
                         .Sum(p => p.PointsEarned),
@@ -140,7 +142,7 @@ public static class CachedReads
                 .ToListAsync();
 
             return entries.Select((e, i) => new LeaderboardEntryDto(
-                e.Id.ToString(), e.Name, e.TotalPoints, 0, e.CorrectScores, i + 1, e.LastSubmittedAt
+                e.Id.ToString(), e.Name, e.WhatsAppName, e.TotalPoints, 0, e.CorrectScores, i + 1, e.LastSubmittedAt
             )).ToList();
         });
 
