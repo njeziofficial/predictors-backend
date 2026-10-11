@@ -20,6 +20,7 @@ public static class Permissions
 {
     public const string FixturesManage = "fixtures.manage";
     public const string ParticipationView = "participation.view";
+    public const string MarkingView = "marking.view";
     public const string UsersView = "users.view";
     public const string UsersCreate = "users.create";
     public const string UsersEdit = "users.edit";
@@ -40,6 +41,8 @@ public static class Permissions
             "Create, edit and delete match weeks and fixtures, and correct scores.", true),
         new(ParticipationView, "Players", "Prediction check",
             "See who has or hasn't predicted a week, with their phone numbers.", true),
+        new(MarkingView, "Players", "Check marking",
+            "See every player's picks once a match has kicked off, with the result and the points each pick earned.", true),
         new(UsersView, "Players", "View players",
             "See the player list with emails and phone numbers.", true),
         new(UsersCreate, "Players", "Create players",

@@ -105,6 +105,8 @@ builder.Services.AddSingleton<PresenceTracker>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IScoringService, ScoringService>();
 builder.Services.AddScoped<PointsReconciler>();
+builder.Services.AddScoped<WeekMarking>();
+builder.Services.AddScoped<WeekReconciliation>();
 builder.Services.AddHostedService<PointsReconciliationBackgroundService>();
 
 // ── Live Score Scraper ────────────────────────────────────────────────────────
@@ -222,6 +224,9 @@ try
             "ALTER TABLE \"AuditLogs\" ADD COLUMN IF NOT EXISTS \"NewValue\" character varying(500) NULL;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"MatchWeeks\" ADD COLUMN IF NOT EXISTS \"ReminderSentAt\" timestamp with time zone NULL;");
+        // End-of-week marking check. Same SQL as db/supabase/2026-10-12-week-reconciliation.sql.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"MatchWeeks\" ADD COLUMN IF NOT EXISTS \"ReconciledAt\" timestamp with time zone NULL;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"SourceName\" text NOT NULL DEFAULT 'Flashscore';");
         await db.Database.ExecuteSqlRawAsync(

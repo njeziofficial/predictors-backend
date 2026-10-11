@@ -38,18 +38,11 @@ public class ScoringService(AppDbContext db) : IScoringService
             : away > home ? OutcomeType.AwayWin
             : OutcomeType.Draw;
 
+        // A correct-score pick is all or nothing: the exact score earns CorrectScorePoints, any
+        // other score earns 0, even one that got the winner (or the draw) right. Only a home win,
+        // away win or draw pick is marked on the result alone.
         if (prediction.Outcome == OutcomeType.CorrectScore)
-        {
-            if (prediction.HomeGoals == home && prediction.AwayGoals == away)
-                return Points[OutcomeType.CorrectScore];
-
-            // Direction right but exact score wrong → directional points
-            var predictedDir = (prediction.HomeGoals ?? 0) > (prediction.AwayGoals ?? 0) ? OutcomeType.HomeWin
-                : (prediction.AwayGoals ?? 0) > (prediction.HomeGoals ?? 0) ? OutcomeType.AwayWin
-                : OutcomeType.Draw;
-
-            return predictedDir == actual ? Points[actual] : 0;
-        }
+            return prediction.HomeGoals == home && prediction.AwayGoals == away ? Points[OutcomeType.CorrectScore] : 0;
 
         return prediction.Outcome == actual ? Points[prediction.Outcome] : 0;
     }
@@ -74,6 +67,10 @@ public class ScoringService(AppDbContext db) : IScoringService
             // Weekly standings add up points by the prediction's week.
             p.WeekId = fixture.WeekId;
         }
+
+        // A result changed after the week was signed off: check the week again once it's over.
+        var week = await db.MatchWeeks.FindAsync(fixture.WeekId);
+        if (week?.ReconciledAt is not null) week.ReconciledAt = null;
 
         await db.SaveChangesAsync();
     }

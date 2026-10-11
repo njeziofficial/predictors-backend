@@ -83,7 +83,8 @@ internal static class StringTruncation
     public static string Truncate(this string value, int max) => value.Length <= max ? value : value[..max];
 }
 
-// Runs the reconciler shortly after start-up and then every 15 minutes.
+// Runs the reconciler shortly after start-up and then every 15 minutes, followed by the
+// end-of-week check (WeekReconciliation) for any week whose matches are all over.
 internal class PointsReconciliationBackgroundService(
     IServiceScopeFactory scopeFactory, ILogger<PointsReconciliationBackgroundService> logger) : BackgroundService
 {
@@ -101,6 +102,7 @@ internal class PointsReconciliationBackgroundService(
                 var corrections = await scope.ServiceProvider.GetRequiredService<PointsReconciler>().ReconcileAsync(actor: null, ct);
                 if (corrections.Count > 0)
                     logger.LogWarning("[Points] Reconciliation corrected {Count} predictions", corrections.Count);
+                await scope.ServiceProvider.GetRequiredService<WeekReconciliation>().SignOffFinishedWeeksAsync(corrections, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
