@@ -86,7 +86,8 @@ internal static class StringTruncation
 // Runs the reconciler shortly after start-up and then every 15 minutes, followed by the
 // end-of-week check (WeekReconciliation) for any week whose matches are all over.
 internal class PointsReconciliationBackgroundService(
-    IServiceScopeFactory scopeFactory, ILogger<PointsReconciliationBackgroundService> logger) : BackgroundService
+    IServiceScopeFactory scopeFactory, Monitoring.ScraperMonitor monitor,
+    ILogger<PointsReconciliationBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(15);
 
@@ -103,11 +104,13 @@ internal class PointsReconciliationBackgroundService(
                 if (corrections.Count > 0)
                     logger.LogWarning("[Points] Reconciliation corrected {Count} predictions", corrections.Count);
                 await scope.ServiceProvider.GetRequiredService<WeekReconciliation>().SignOffFinishedWeeksAsync(corrections, ct);
+                monitor.RecordReconcile(DateTime.UtcNow, corrections.Count, null);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
                 logger.LogError(ex, "[Points] Reconciliation failed");
+                monitor.RecordReconcile(DateTime.UtcNow, 0, $"{ex.GetType().Name}: {ex.Message}");
             }
             await Task.Delay(Interval, ct);
         }

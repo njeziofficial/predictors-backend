@@ -9,9 +9,15 @@ using OctopusPrediction.Api.Middleware;
 using OctopusPrediction.Api.Services;
 using OctopusPrediction.Api.Services.Caching;
 using OctopusPrediction.Api.Services.LiveScores;
+using OctopusPrediction.Api.Services.Monitoring;
 using OctopusPrediction.Api.Services.Scraping;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Recent log lines, kept in memory for the system admin's Scraper Health page.
+var recentLogs = new RecentLogs();
+builder.Logging.AddProvider(recentLogs);
+builder.Services.AddSingleton(recentLogs);
 
 // ── MVC ──────────────────────────────────────────────────────────────────────
 builder.Services.AddControllers()
@@ -122,6 +128,8 @@ builder.Services.AddSingleton<IMatchSource, FotMobSource>();
 builder.Services.AddSingleton<IMatchSource, FoxSportsSource>();
 // Rests a source that has started refusing the scraper; shown on the admin status card.
 builder.Services.AddSingleton<SourceGuard>();
+// What the scraper and the points check are doing, for the Scraper Health page.
+builder.Services.AddSingleton<ScraperMonitor>();
 builder.Services.AddHostedService<LiveScraperBackgroundService>();
 // The scraper only queues matches that changed (MatchUpdateQueue); the processor applies them
 // to fixtures as they arrive, and the cleanup job deletes old applied rows.

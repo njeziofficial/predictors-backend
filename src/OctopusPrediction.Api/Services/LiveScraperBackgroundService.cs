@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services.LiveScores;
+using OctopusPrediction.Api.Services.Monitoring;
 using OctopusPrediction.Api.Services.Scraping;
 using PuppeteerSharp;
 
@@ -14,6 +15,7 @@ internal class LiveScraperBackgroundService(
     IServiceScopeFactory scopeFactory,
     SourceGuard guard,
     MatchUpdateQueue queue,
+    ScraperMonitor monitor,
     ILogger<LiveScraperBackgroundService> logger)
     : BackgroundService
 {
@@ -89,6 +91,7 @@ internal class LiveScraperBackgroundService(
 
             if (!settings.Enabled)
             {
+                monitor.SetPhase("Paused", "Switched off in admin settings.");
                 await Task.Delay(TimeSpan.FromSeconds(5), ct);
                 continue;
             }
@@ -108,6 +111,7 @@ internal class LiveScraperBackgroundService(
 
                     // Inside the try: a failed Chromium download or launch (e.g. a network blip at
                     // startup) must only skip this attempt. Escaping ExecuteAsync would stop the host.
+                    monitor.SetPhase("Polling", $"Reading {SourcePlan.Describe(settings)}.");
                     browser ??= await LaunchBrowserAsync();
 
                     try
@@ -117,6 +121,8 @@ internal class LiveScraperBackgroundService(
                     catch (PuppeteerException pex) when (!ct.IsCancellationRequested)
                     {
                         logger.LogWarning(pex, "[LiveScraper] Browser error — restarting");
+                        monitor.SetPhase("Restarting", $"Chrome failed ({pex.Message}). Starting a new one in 10 seconds.",
+                            DateTime.UtcNow.AddSeconds(10));
                         break;
                     }
                     catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -125,6 +131,7 @@ internal class LiveScraperBackgroundService(
                     }
 
                     var (inMatchWindow, matchActive, nextWindowStart) = await GetMatchScheduleAsync(ct);
+                    monitor.SetSchedule(matchActive && inMatchWindow ? "InPlay" : inMatchWindow ? "MatchWindow" : "NoMatch");
                     if (inMatchWindow != _wasInMatchWindow)
                     {
                         logger.LogInformation(inMatchWindow
@@ -156,13 +163,25 @@ internal class LiveScraperBackgroundService(
                     }
                     if (delay < pollInterval) delay = pollInterval;
                     // A request every exactly-60s is an obvious bot; a varying gap looks like a visitor.
-                    await Task.Delay(SourceGuard.Jitter(delay), ct);
+                    delay = SourceGuard.Jitter(delay);
+                    monitor.SetPhase("Waiting",
+                        !inMatchWindow
+                            ? $"No match on, so polling every {IdlePollInterval.TotalMinutes:0} minutes with Chrome closed" +
+                              (nextWindowStart is { } w ? $" (next match window opens {w:ddd HH:mm} UTC)." : ".")
+                            : matchActive
+                                ? $"A match is in play (or about to start): polling every {settings.PollIntervalSeconds}s."
+                                : $"Match window open but nothing in play yet: polling every {QuietWindowPollInterval.TotalMinutes:0} minutes.",
+                        DateTime.UtcNow + delay);
+                    // Cut short by "Poll now" on the Scraper Health page.
+                    await monitor.WaitForNextPollAsync(delay, ct);
                 }
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 logger.LogError(ex, "[LiveScraper] Browser download or launch failed — retrying");
+                monitor.SetPhase("Restarting", $"Chrome couldn't start ({ex.GetType().Name}: {ex.Message}). Retrying in 10 seconds.",
+                    DateTime.UtcNow.AddSeconds(10));
             }
             finally
             {
@@ -277,7 +296,27 @@ internal class LiveScraperBackgroundService(
     // returns matches, the poll is skipped and retried next interval.
     private async Task ScrapeAndSyncAsync(IBrowser browser, ScraperSettings settings, CancellationToken ct)
     {
+        var started = DateTime.UtcNow;
+        var planNames = new List<string>();
+        void Record(string outcome, string? source = null, int matches = 0, int queued = 0, string? problem = null) =>
+            monitor.RecordPoll(new PollRecord(started, (int)(DateTime.UtcNow - started).TotalMilliseconds,
+                planNames, source, matches, queued, outcome, problem));
+        try
+        {
+            await PollSourcesAsync(browser, settings, planNames, Record, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Record("Failed", problem: $"{ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
+    private async Task PollSourcesAsync(IBrowser browser, ScraperSettings settings, List<string> planNames,
+        Action<string, string?, int, int, string?> record, CancellationToken ct)
+    {
         var plan = SourcePlan.ForPoll(_sources, settings, _poll++);
+        planNames.AddRange(plan.Select(s => s.Name));
         if (plan.Count == 1 && !string.Equals(plan[0].Name, settings.SourceName, StringComparison.OrdinalIgnoreCase))
             logger.LogWarning("[LiveScraper] Unknown source {SourceName} — falling back to {Fallback}",
                 settings.SourceName, plan[0].Name);
@@ -290,6 +329,7 @@ internal class LiveScraperBackgroundService(
                     "Fallback or Rotate with more sources keeps scores coming while one rests.",
                     string.Join(", ", plan.Select(s => s.Name)), plan.Min(s => guard.CoolingUntil(s.Name)));
             _allSourcesCoolingLogged = true;
+            record("Resting", null, 0, 0, $"Every source is resting until {plan.Min(s => guard.CoolingUntil(s.Name)):HH:mm} UTC.");
             return;
         }
         _allSourcesCoolingLogged = false;
@@ -300,14 +340,17 @@ internal class LiveScraperBackgroundService(
             if (matches.Length == 0) continue;
 
             logger.LogDebug("[LiveScraper] Scraped {Count} matches from {Source}", matches.Length, source.Name);
-            if (await queue.EnqueueAsync(matches, source.Name, settings.Competition, ct) > 0)
+            var queued = await queue.EnqueueAsync(matches, source.Name, settings.Competition, ct);
+            if (queued > 0)
                 await queue.WaitUntilAppliedAsync(ApplyWait, ct);
+            record("Ok", source.Name, matches.Length, queued, null);
             return;
         }
 
         if (usable.Count > 1)
             logger.LogWarning("[LiveScraper] No source returned matches this cycle ({Sources})",
                 string.Join(", ", usable.Select(s => s.Name)));
+        record("NoMatches", null, 0, 0, $"No matches from {string.Join(", ", usable.Select(s => s.Name))}.");
     }
 
     // Titles of the "checking your browser" / "access denied" pages bot protection serves
@@ -322,6 +365,7 @@ internal class LiveScraperBackgroundService(
     // The outcome goes to SourceGuard, which rests a source that is refusing us.
     private async Task<ScrapedMatchDto[]> ScrapeSourceAsync(IBrowser browser, IMatchSource source, CancellationToken ct)
     {
+        var attemptStarted = DateTime.UtcNow;
         await using var page = await browser.NewPageAsync();
         await BlockUnneededRequestsAsync(page, blockStylesheets: source.Name == "Flashscore");
         // Look like the desktop Chrome this actually is: the browser's own version (a fixed,
@@ -382,6 +426,11 @@ internal class LiveScraperBackgroundService(
         {
             guard.RecordSuccess(source.Name);
         }
+        monitor.RecordSourceAttempt(source.Name, attemptStarted, matches.Length, (int)(now - attemptStarted).TotalMilliseconds,
+            refusal is not null ? $"Refused: {refusal}"
+            : error is not null ? $"Failed: {error.GetType().Name}: {error.Message}"
+            : matches.Length == 0 ? "No matches on the page"
+            : $"{matches.Length} matches");
         return matches;
     }
 

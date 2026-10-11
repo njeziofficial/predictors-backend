@@ -77,6 +77,9 @@ public sealed class MatchUpdateQueue(IServiceScopeFactory scopeFactory, ILogger<
     /// <summary>The next poll queues this match even if it reads the same as now.</summary>
     public void Forget(string fixtureId) => _last.TryRemove(fixtureId, out _);
 
+    /// <summary>The next poll queues every match, changed or not (the Scraper Health page's "Poll now").</summary>
+    public void ForgetAll() => _last.Clear();
+
     /// <summary>The processor has taken every row up to this id off the queue (applied or given up on).</summary>
     public void ReportApplied(long throughId)
     {
