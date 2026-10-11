@@ -23,9 +23,8 @@ public sealed class CacheInvalidationInterceptor(AppCache cache, LiveUpdateNotif
         [typeof(UserPermission)] = [CacheRegion.Access],
     };
 
-    // Columns nothing cached depends on. The scraper stamps Fixture.UpdatedAt on every fixture
-    // every poll and every sign-in stamps User.LastLoginAt; counting those would empty the caches
-    // constantly for no reason.
+    // Columns nothing cached depends on. Applying a scraped reading stamps Fixture.UpdatedAt and
+    // every sign-in stamps User.LastLoginAt; counting those would empty the caches for no reason.
     private static readonly Dictionary<Type, HashSet<string>> IgnoredColumns = new()
     {
         [typeof(Fixture)] = [nameof(Fixture.UpdatedAt)],

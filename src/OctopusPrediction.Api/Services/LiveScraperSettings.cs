@@ -6,6 +6,10 @@ public class LiveScraperSettings
     public int PollIntervalSeconds { get; set; } = 60;
     public bool Enabled { get; set; } = true;
 
+    // How long applied rows stay in MatchUpdates (a history of what each source reported)
+    // before MatchUpdateCleanupService deletes them.
+    public int UpdateRetentionHours { get; set; } = 48;
+
     // A Chrome headless shell already on disk (the Docker image installs one), so the scraper
     // doesn't download it again on every start: Render's disk is wiped each time the service
     // sleeps or restarts. Unset, or missing on disk, means download it as before.

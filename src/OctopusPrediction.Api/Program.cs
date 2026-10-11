@@ -8,6 +8,7 @@ using OctopusPrediction.Api.Hubs;
 using OctopusPrediction.Api.Middleware;
 using OctopusPrediction.Api.Services;
 using OctopusPrediction.Api.Services.Caching;
+using OctopusPrediction.Api.Services.LiveScores;
 using OctopusPrediction.Api.Services.Scraping;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -120,6 +121,12 @@ builder.Services.AddSingleton<IMatchSource, FoxSportsSource>();
 // Rests a source that has started refusing the scraper; shown on the admin status card.
 builder.Services.AddSingleton<SourceGuard>();
 builder.Services.AddHostedService<LiveScraperBackgroundService>();
+// The scraper only queues matches that changed (MatchUpdateQueue); the processor applies them
+// to fixtures as they arrive, and the cleanup job deletes old applied rows.
+builder.Services.AddSingleton<MatchUpdateQueue>();
+builder.Services.AddScoped<FixtureSync>();
+builder.Services.AddHostedService<MatchUpdateProcessor>();
+builder.Services.AddHostedService<MatchUpdateCleanupService>();
 
 // ── Prediction Reminders (Twilio) ────────────────────────────────────────────
 builder.Services.Configure<TwilioSettings>(builder.Configuration.GetSection("Twilio"));
@@ -348,6 +355,25 @@ try
             "CREATE INDEX IF NOT EXISTS \"IX_ChatMessages_ConversationId_CreatedAt\" ON \"ChatMessages\" (\"ConversationId\", \"CreatedAt\");");
         await db.Database.ExecuteSqlRawAsync(
             "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ChatMessages_SenderId_ClientId\" ON \"ChatMessages\" (\"SenderId\", \"ClientId\");");
+
+        // Scraped match readings waiting to be applied. Same SQL as db/supabase/2026-10-11-match-updates.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "MatchUpdates" (
+                "Id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                "FixtureId" character varying(100) NOT NULL,
+                "Source" character varying(50) NOT NULL,
+                "Competition" character varying(100) NOT NULL,
+                "Fingerprint" character varying(64) NOT NULL,
+                "Payload" jsonb NOT NULL,
+                "ScrapedAt" timestamp with time zone NOT NULL,
+                "ProcessedAt" timestamp with time zone NULL,
+                "Outcome" character varying(20) NULL,
+                "Attempts" integer NOT NULL DEFAULT 0,
+                "Error" character varying(500) NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_MatchUpdates_ProcessedAt\" ON \"MatchUpdates\" (\"ProcessedAt\");");
 
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         await DbSeeder.SeedAdminUserAsync(db, builder.Configuration, seedLogger);

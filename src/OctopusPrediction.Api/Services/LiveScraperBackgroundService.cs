@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Entities;
+using OctopusPrediction.Api.Services.LiveScores;
 using OctopusPrediction.Api.Services.Scraping;
 using PuppeteerSharp;
 
@@ -12,6 +13,7 @@ internal class LiveScraperBackgroundService(
     IEnumerable<IMatchSource> sources,
     IServiceScopeFactory scopeFactory,
     SourceGuard guard,
+    MatchUpdateQueue queue,
     ILogger<LiveScraperBackgroundService> logger)
     : BackgroundService
 {
@@ -33,6 +35,8 @@ internal class LiveScraperBackgroundService(
     // reason for a site to notice us. Full speed resumes this long before the next kickoff.
     private static readonly TimeSpan QuietWindowPollInterval = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan KickoffSoon = TimeSpan.FromMinutes(5);
+    // How long to wait for MatchUpdateProcessor to apply a poll before reading the schedule.
+    private static readonly TimeSpan ApplyWait = TimeSpan.FromSeconds(15);
     private bool _allSourcesCoolingLogged;
     // Chrome's memory creeps up over hours of reloading the same page; start a fresh one now and then.
     private const int RecycleBrowserAfterCycles = 60;
@@ -268,8 +272,9 @@ internal class LiveScraperBackgroundService(
     }
 
     // Tries this poll's sources in turn (one in Single mode; see SourcePlan), skipping any that
-    // SourceGuard is resting, and syncs the first that returns matches. If none does, the poll is
-    // skipped and retried next interval.
+    // SourceGuard is resting, and hands what the first to return matches read to MatchUpdateQueue,
+    // which queues only the matches that changed for MatchUpdateProcessor to apply. If no source
+    // returns matches, the poll is skipped and retried next interval.
     private async Task ScrapeAndSyncAsync(IBrowser browser, ScraperSettings settings, CancellationToken ct)
     {
         var plan = SourcePlan.ForPoll(_sources, settings, _poll++);
@@ -295,7 +300,8 @@ internal class LiveScraperBackgroundService(
             if (matches.Length == 0) continue;
 
             logger.LogDebug("[LiveScraper] Scraped {Count} matches from {Source}", matches.Length, source.Name);
-            await SyncAsync(matches, settings.Competition, ct);
+            if (await queue.EnqueueAsync(matches, source.Name, settings.Competition, ct) > 0)
+                await queue.WaitUntilAppliedAsync(ApplyWait, ct);
             return;
         }
 
@@ -401,293 +407,6 @@ internal class LiveScraperBackgroundService(
         if (string.IsNullOrWhiteSpace(value)) return null;
         if (int.TryParse(value, out var seconds)) return TimeSpan.FromSeconds(seconds);
         if (DateTimeOffset.TryParse(value, out var at)) return at - DateTimeOffset.UtcNow;
-        return null;
-    }
-
-    private async Task SyncAsync(ScrapedMatchDto[] matches, string competition, CancellationToken ct)
-    {
-        using var scope = scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var scoring = scope.ServiceProvider.GetRequiredService<IScoringService>();
-
-        var addedWeeks = new HashSet<string>();
-        var toScore = new List<string>();
-
-        foreach (var m in matches)
-        {
-            var changedId = await SyncMatchAsync(db, addedWeeks, m, competition, ct);
-            if (changedId is not null) toScore.Add(changedId);
-        }
-
-        await db.SaveChangesAsync(ct);
-        await RemoveEmptyUnknownWeekAsync(db, competition, ct);
-
-        foreach (var fId in toScore)
-        {
-            await scoring.ScoreFixtureAsync(fId);
-            logger.LogInformation("[LiveScraper] Predictions scored for fixture {Id}", fId);
-        }
-    }
-
-    // A match can't be over sooner than this after kickoff (two halves and the break), so a
-    // "finished" reading before then is a source glitch, not a result.
-    private static readonly TimeSpan MinMatchDuration = TimeSpan.FromMinutes(100);
-
-    // Returns the fixtureId when its result changed (it ended, its final score changed, or it
-    // stopped being ended), so its predictions are scored again; null otherwise.
-    private async Task<string?> SyncMatchAsync(
-        AppDbContext db, HashSet<string> addedWeeks, ScrapedMatchDto m, string competition, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(m.Home) || string.IsNullOrWhiteSpace(m.Away)) return null;
-
-        var fixtureId = BuildFixtureId(m.Home, m.Away);
-        var hasRound = !string.IsNullOrWhiteSpace(m.Round);
-        var weekId = BuildWeekId(competition, m.Round);
-        var newStatus = MapStatus(m);
-
-        var fixture = await db.Fixtures.FindAsync([fixtureId], ct);
-        var wasEnded = fixture?.Status == FixtureStatus.Ended;
-        var (oldFinalHome, oldFinalAway) = (fixture?.FinalScoreHome, fixture?.FinalScoreAway);
-
-        // A bare "HH:mm" is only a guess at the date (see ParseKickoff), so it's the last resort.
-        var scrapedKickoff = ParseKickoff(m.Time);
-        var datedKickoff = scrapedKickoff is { HasDate: true } k ? k.Utc : (DateTime?)null;
-
-        // Flashscore marks a row finished by the absence of its "live" marker, which can drop
-        // out for a moment mid-match. Scoring that would award points for a half-time score.
-        var kickoffForCheck = datedKickoff ?? fixture?.Kickoff ?? scrapedKickoff?.Utc;
-        if (newStatus == FixtureStatus.Ended && kickoffForCheck is { } ko && DateTime.UtcNow < ko + MinMatchDuration)
-        {
-            var keep = DateTime.UtcNow < ko ? FixtureStatus.PreMatch
-                : fixture?.Status is FixtureStatus.HalfTime ? FixtureStatus.HalfTime
-                : FixtureStatus.Live;
-            logger.LogWarning("[LiveScraper] {Home} vs {Away} reported finished {Minutes:0} min after kickoff — treating it as {Status}",
-                m.Home, m.Away, (DateTime.UtcNow - ko).TotalMinutes, keep);
-            newStatus = keep;
-        }
-
-        // Without a round there's no week to put a new fixture in: leave it until a poll finds
-        // the round (FlashscoreSource looks it up), rather than invent a "Week ?".
-        if (fixture is null && !hasRound)
-        {
-            logger.LogDebug("[LiveScraper] Skipping new fixture {Home} vs {Away} until its round is known", m.Home, m.Away);
-            return null;
-        }
-
-        // A team plays once a round. If the week already has a match for either team, this is
-        // that match under a spelling TeamNameNormalizer doesn't know yet: don't add it twice.
-        if (fixture is null && await FindSameRoundMatchAsync(db, weekId, m, ct) is { } existing)
-        {
-            logger.LogWarning("[LiveScraper] Not adding {Home} vs {Away}: {Week} already has {ExistingHome} vs {ExistingAway}. " +
-                "If they're the same match, add the spelling to TeamNameNormalizer.",
-                m.Home, m.Away, weekId, existing.HomeTeam, existing.AwayTeam);
-            return null;
-        }
-
-        // Once a match has started or finished it never goes back to "not started". Sources that
-        // only mark "FT" (ESPN, WorldFootball) show a match in play as not started, which would
-        // otherwise reopen it and take its points away.
-        if (fixture is not null && newStatus == FixtureStatus.PreMatch
-            && fixture.Status is FixtureStatus.Live or FixtureStatus.HalfTime or FixtureStatus.Ended)
-        {
-            logger.LogDebug("[LiveScraper] Ignoring 'not started' for {Home} vs {Away}, already {Status}",
-                m.Home, m.Away, fixture.Status);
-            return null;
-        }
-
-        if (hasRound && (fixture is null || fixture.WeekId == UnknownWeekId(competition)))
-            await EnsureWeekAsync(db, addedWeeks, weekId, competition, m.Round, ct);
-
-        if (fixture is not null && hasRound && fixture.WeekId == UnknownWeekId(competition))
-            await MoveOutOfUnknownWeekAsync(db, fixture, weekId, ct);
-
-        if (fixture is null)
-        {
-            fixture = new Fixture
-            {
-                Id = fixtureId,
-                WeekId = weekId,
-                HomeTeam = m.Home,
-                AwayTeam = m.Away,
-                Kickoff = scrapedKickoff?.Utc ?? DateTime.UtcNow,
-                Status = newStatus,
-                UpdatedAt = DateTime.UtcNow
-            };
-            db.Fixtures.Add(fixture);
-            logger.LogDebug("[LiveScraper] New fixture: {Home} vs {Away} [{Id}]", m.Home, m.Away, fixtureId);
-        }
-        else
-        {
-            fixture.Status = newStatus;
-            fixture.UpdatedAt = DateTime.UtcNow;
-            // Only a time that comes with its date may move a kickoff, which drives prediction
-            // locks: a bare "HH:mm" may be another day's match, or in the site's own time zone.
-            if (datedKickoff.HasValue) fixture.Kickoff = datedKickoff.Value;
-        }
-
-        var scoreHome = ParseScore(m.ScoreHome);
-        var scoreAway = ParseScore(m.ScoreAway);
-
-        if (newStatus == FixtureStatus.Ended)
-        {
-            fixture.FinalScoreHome = scoreHome;
-            fixture.FinalScoreAway = scoreAway;
-            fixture.LiveScoreHome = null;
-            fixture.LiveScoreAway = null;
-            fixture.LiveMinute = null;
-        }
-        else if (newStatus is FixtureStatus.Live or FixtureStatus.HalfTime)
-        {
-            fixture.LiveScoreHome = scoreHome;
-            fixture.LiveScoreAway = scoreAway;
-            fixture.LiveMinute = ParseMinute(m.Stage);
-            // Back in play after a wrong "finished" reading: that result no longer stands.
-            fixture.FinalScoreHome = null;
-            fixture.FinalScoreAway = null;
-        }
-
-        var isEnded = newStatus == FixtureStatus.Ended;
-        var resultChanged = isEnded != wasEnded
-            || (isEnded && (fixture.FinalScoreHome != oldFinalHome || fixture.FinalScoreAway != oldFinalAway));
-        return resultChanged ? fixtureId : null;
-    }
-
-    // A fixture in the week (saved, or added earlier this poll) involving either of m's teams.
-    private static async Task<Fixture?> FindSameRoundMatchAsync(
-        AppDbContext db, string weekId, ScrapedMatchDto m, CancellationToken ct)
-    {
-        string[] teams = [TeamNameNormalizer.Slug(m.Home), TeamNameNormalizer.Slug(m.Away)];
-        var inWeek = await db.Fixtures.Where(f => f.WeekId == weekId).ToListAsync(ct);
-        return inWeek.Concat(db.Fixtures.Local.Where(f => f.WeekId == weekId))
-            .FirstOrDefault(f => teams.Contains(TeamNameNormalizer.Slug(f.HomeTeam))
-                || teams.Contains(TeamNameNormalizer.Slug(f.AwayTeam)));
-    }
-
-    private async Task EnsureWeekAsync(
-        AppDbContext db, HashSet<string> addedWeeks, string weekId, string competition, string? round, CancellationToken ct)
-    {
-        if (addedWeeks.Contains(weekId) || await db.MatchWeeks.AnyAsync(w => w.Id == weekId, ct)) return;
-        db.MatchWeeks.Add(new MatchWeek
-        {
-            Id = weekId,
-            Name = BuildWeekName(competition, round),
-            Competition = competition
-        });
-        addedWeeks.Add(weekId);
-        logger.LogInformation("[LiveScraper] Created MatchWeek: {Id}", weekId);
-    }
-
-    // Older scrapes filed fixtures whose round wasn't on the page under "Week ?". Once the round
-    // is known, move the fixture and its predictions to the right week. Tracked changes, not a
-    // bulk update, so the save empties the cached weeks, predictions and leaderboard.
-    private async Task MoveOutOfUnknownWeekAsync(AppDbContext db, Fixture fixture, string weekId, CancellationToken ct)
-    {
-        logger.LogInformation("[LiveScraper] Moving {Home} vs {Away} from {From} to {To}",
-            fixture.HomeTeam, fixture.AwayTeam, fixture.WeekId, weekId);
-        fixture.WeekId = weekId;
-        foreach (var prediction in await db.Predictions.Where(p => p.FixtureId == fixture.Id).ToListAsync(ct))
-            prediction.WeekId = weekId;
-    }
-
-    // Drops "Week ?" once every fixture has been moved out of it (see MoveOutOfUnknownWeekAsync).
-    private async Task RemoveEmptyUnknownWeekAsync(AppDbContext db, string competition, CancellationToken ct)
-    {
-        var unknownWeekId = UnknownWeekId(competition);
-        var week = await db.MatchWeeks.FindAsync([unknownWeekId], ct);
-        if (week is null || await db.Fixtures.AnyAsync(f => f.WeekId == unknownWeekId, ct)) return;
-        db.MatchWeeks.Remove(week);
-        await db.SaveChangesAsync(ct);
-        logger.LogInformation("[LiveScraper] Removed empty MatchWeek {Id}", unknownWeekId);
-    }
-
-    private static string UnknownWeekId(string competition) => BuildWeekId(competition, null);
-
-    // Team-name based (not source-specific-id based) so that whichever source syncs a
-    // given match, it resolves to the same Fixture row instead of creating a duplicate.
-    private static string BuildFixtureId(string home, string away) =>
-        $"fs-{TeamNameNormalizer.Slug(home)}-vs-{TeamNameNormalizer.Slug(away)}";
-
-    private static string BuildWeekId(string competition, string? round) =>
-        $"{Slug(competition)}-week-{NormalizeRound(round)}";
-
-    private static string BuildWeekName(string competition, string? round) =>
-        $"{competition} — Week {NormalizeRound(round)}";
-
-    private static string NormalizeRound(string? round)
-    {
-        if (string.IsNullOrWhiteSpace(round)) return "?";
-        var parts = round.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        return parts.Length >= 2 ? parts[^1] : round.Trim();
-    }
-
-    private static string Slug(string name) =>
-        new string(name.ToLower().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
-
-    // Prefers a source's explicit IsScheduled/IsLive flags (Flashscore's status now lives
-    // on a row modifier class, not in the stage text — see FlashscoreSource). Falls back
-    // to parsing Stage text for sources that only expose that (Livescore, BBC Sport).
-    private static FixtureStatus MapStatus(ScrapedMatchDto m)
-    {
-        // Flashscore always supplies both flags (true/false, never absent). When present,
-        // trust them completely — a finished Flashscore match has both flags false and no
-        // Stage text at all, which the text-parsing fallback below would misread as PreMatch.
-        if (m.IsScheduled is not null || m.IsLive is not null)
-        {
-            if (m.IsScheduled == true) return FixtureStatus.PreMatch;
-            if (m.IsLive == true) return IsHalfTime(m.Stage) ? FixtureStatus.HalfTime : FixtureStatus.Live;
-            return FixtureStatus.Ended;
-        }
-
-        return m.Stage?.Trim() switch
-        {
-            "FT" or "AET" or "AP" or "Finished" => FixtureStatus.Ended,
-            var s when IsHalfTime(s) => FixtureStatus.HalfTime,
-            "Postp." or "Postponed" => FixtureStatus.Postponed,
-            "Canc." or "Cancelled" or "Canceled" or "Aband." => FixtureStatus.Cancelled,
-            var s when s is not null && (s.EndsWith("'") || int.TryParse(s.Split('+')[0], out _)) => FixtureStatus.Live,
-            _ => FixtureStatus.PreMatch
-        };
-    }
-
-    private static bool IsHalfTime(string? stage) =>
-        stage is not null && stage.Trim().Equals("HT", StringComparison.OrdinalIgnoreCase);
-
-    private static int? ParseMinute(string? stage)
-    {
-        if (string.IsNullOrWhiteSpace(stage)) return null;
-        var clean = stage.TrimEnd('\'').Split('+')[0];
-        return int.TryParse(clean, out var m) ? m : null;
-    }
-
-    private static int? ParseScore(string? score) =>
-        int.TryParse(score?.Trim(), out var v) ? v : null;
-
-    // HasDate is false for a bare "HH:mm", which is assumed to be today.
-    private readonly record struct ScrapedKickoff(DateTime Utc, bool HasDate);
-
-    private static ScrapedKickoff? ParseKickoff(string? time)
-    {
-        if (string.IsNullOrWhiteSpace(time) || time.Contains("'") || time is "HT" or "FT") return null;
-
-        // FotMob supplies a full ISO-8601 UTC instant instead of a bare time-of-day string —
-        // trust it outright rather than running it through the "assume today" fallback below,
-        // which exists only because the other sources never give us a real date to work with.
-        // TryParseExact (not the general-purpose TryParse) so a bare "HH:mm" from another
-        // source can never be misread as an ISO timestamp and take this branch by accident.
-        if (DateTimeOffset.TryParseExact(time, "yyyy-MM-ddTHH:mm:ssZ", null,
-            System.Globalization.DateTimeStyles.AssumeUniversal, out var iso))
-            return new ScrapedKickoff(iso.UtcDateTime, HasDate: true);
-
-        // Day and month, no year: this year.
-        if (DateTime.TryParseExact(time, ["d.MM. HH:mm", "dd.MM. HH:mm"],
-            null, System.Globalization.DateTimeStyles.None, out var dated))
-            return new ScrapedKickoff(DateTime.SpecifyKind(dated, DateTimeKind.Utc), HasDate: true);
-
-        if (DateTime.TryParseExact(time, "HH:mm", null, System.Globalization.DateTimeStyles.None, out var t))
-        {
-            var today = DateTime.UtcNow.Date;
-            return new ScrapedKickoff(DateTime.SpecifyKind(today + t.TimeOfDay, DateTimeKind.Utc), HasDate: false);
-        }
         return null;
     }
 }

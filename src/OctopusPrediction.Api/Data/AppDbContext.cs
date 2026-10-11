@@ -19,6 +19,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Conversation> Conversations => Set<Conversation>();
     public DbSet<ConversationParticipant> ConversationParticipants => Set<ConversationParticipant>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
+    public DbSet<MatchUpdate> MatchUpdates => Set<MatchUpdate>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -76,6 +77,20 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             s.Property(x => x.SourceName).HasMaxLength(50);
             s.Property(x => x.SourceMode).HasMaxLength(20);
             s.Property(x => x.SourceOrder).HasMaxLength(500);
+        });
+
+        mb.Entity<MatchUpdate>(u =>
+        {
+            u.HasKey(x => x.Id);
+            u.Property(x => x.Id).UseIdentityAlwaysColumn();
+            u.Property(x => x.FixtureId).HasMaxLength(100);
+            u.Property(x => x.Source).HasMaxLength(50);
+            u.Property(x => x.Competition).HasMaxLength(100);
+            u.Property(x => x.Fingerprint).HasMaxLength(64);
+            u.Property(x => x.Payload).HasColumnType("jsonb");
+            u.Property(x => x.Outcome).HasMaxLength(20);
+            u.Property(x => x.Error).HasMaxLength(500);
+            u.HasIndex(x => x.ProcessedAt);
         });
 
         mb.Entity<AuditLog>(a =>

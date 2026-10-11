@@ -7,6 +7,7 @@ using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Dtos.Admin;
 using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.LiveScores;
 using OctopusPrediction.Api.Services.Scraping;
 
 namespace OctopusPrediction.Api.Controllers;
@@ -19,7 +20,8 @@ public class AdminController(
     IOptions<LiveScraperSettings> defaults,
     IOptions<TwilioSettings> twilio,
     IEnumerable<IMatchSource> sources,
-    SourceGuard guard) : ControllerBase
+    SourceGuard guard,
+    MatchUpdateQueue matchUpdates) : ControllerBase
 {
     private readonly IReadOnlyList<string> _sourceNames = [.. sources.Select(s => s.Name)];
     private readonly IReadOnlyList<string> _roundSources = [.. sources.Where(s => s.ProvidesRounds).Select(s => s.Name)];
@@ -206,7 +208,10 @@ public class AdminController(
     public async Task<IActionResult> GetStatus()
     {
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
-        var lastScrapedAt = await db.Fixtures.MaxAsync(f => (DateTime?)f.UpdatedAt);
+        // A poll that changed nothing writes nothing, so the fixtures' UpdatedAt only says when a
+        // score last changed. The queue knows when a source last answered; until it has since
+        // startup, fall back to that.
+        var lastScrapedAt = matchUpdates.LastScrapedAt ?? await db.Fixtures.MaxAsync(f => (DateTime?)f.UpdatedAt);
         var remindersConfigured = !string.IsNullOrWhiteSpace(twilio.Value.AccountSid)
             && !string.IsNullOrWhiteSpace(twilio.Value.AuthToken);
         var sourceProblems = guard.Snapshot()
