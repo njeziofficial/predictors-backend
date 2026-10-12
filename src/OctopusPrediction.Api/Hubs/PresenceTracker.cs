@@ -5,7 +5,7 @@ namespace OctopusPrediction.Api.Hubs;
 // need a SignalR backplane (e.g. Redis) and a shared store for this too.
 public class PresenceTracker
 {
-    private readonly Dictionary<Guid, int> _connections = new();
+    private readonly Dictionary<Guid, int> _connections = [];
     private readonly object _lock = new();
 
     // True when this is the user's first open connection (they just came online).
