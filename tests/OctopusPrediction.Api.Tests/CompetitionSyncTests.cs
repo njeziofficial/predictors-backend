@@ -1,5 +1,5 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services;
@@ -17,11 +17,49 @@ public class CompetitionSyncTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
+    private readonly WarningLog _log = new();
+
     private async Task Sync(string competition, params ScrapedMatchDto[] matches)
     {
-        var sync = new FixtureSync(_db, new ScoringService(_db), NullLogger<FixtureSync>.Instance);
+        var sync = new FixtureSync(_db, new ScoringService(_db), _log);
         await sync.SyncAsync(matches, competition, CancellationToken.None);
         _db.ChangeTracker.Clear();
+    }
+
+    // Keeps the warnings FixtureSync logs.
+    private sealed class WarningLog : ILogger<FixtureSync>
+    {
+        public List<string> Warnings { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? ex, Func<TState, Exception?, string> format)
+        {
+            if (level == LogLevel.Warning) Warnings.Add(format(state, ex));
+        }
+    }
+
+    [Fact]
+    public async Task UnknownRound_IsSkippedWithAWarning_OncePerRoundName()
+    {
+        // Unique, as the warned-about names last the whole test run.
+        var round = $"Mystery stage {Guid.NewGuid():N}";
+        var kickoff = new DateTime(2027, 2, 17, 20, 0, 0, DateTimeKind.Utc);
+
+        await Sync(Ucl, Scheduled("Arsenal", "Inter", round, kickoff), Scheduled("PSG", "Napoli", round, kickoff));
+        await Sync(Ucl, Scheduled("Arsenal", "Inter", round, kickoff));
+
+        Assert.Empty(_db.Fixtures);
+        Assert.Single(_log.Warnings, w => w.Contains(round));
+    }
+
+    [Fact]
+    public async Task Qualifying_IsSkippedQuietly()
+    {
+        await Sync(Ucl, Scheduled("Celtic", "Rangers", $"Qualification - Round 3 {Guid.NewGuid():N}",
+            new DateTime(2026, 8, 5, 19, 0, 0, DateTimeKind.Utc)));
+
+        Assert.Empty(_db.Fixtures);
+        Assert.Empty(_log.Warnings);
     }
 
     private static string Iso(DateTime utc) => utc.ToString("yyyy-MM-ddTHH:mm:ssZ");

@@ -16,6 +16,9 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
 
     private readonly HashSet<string> _addedWeeks = [];
 
+    // Round names already warned about (FixtureSync is made per batch; this lasts the process).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> UnreadRounds = new();
+
     /// <summary>
     /// Saves the matches. Returns the fixtures whose reading wasn't taken as it stands because
     /// of the time (a "finished" too soon after kickoff): the same reading may be right on a
@@ -102,8 +105,18 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
 
         if (fixture is null && week is null)
         {
-            logger.LogDebug("[LiveScores] Skipping {Home} vs {Away}: round {Round} isn't one players predict",
-                m.Home, m.Away, m.Round);
+            // Qualifying (July and August) is skipped on purpose. Any other round we couldn't
+            // place is a source naming a round in a way CompetitionRounds doesn't know yet (the
+            // knockout rounds, first published in February): its matches would quietly be
+            // missing, so say so, once per round name.
+            var kickoff = datedKickoff ?? scrapedKickoff?.Utc;
+            if (kickoff is not { Month: 7 or 8 } && UnreadRounds.TryAdd($"{competition}|{m.Round}", 0))
+                logger.LogWarning("[LiveScores] Skipping {Competition} matches in round \"{Round}\" (e.g. {Home} vs {Away}): " +
+                    "it isn't a round CompetitionRounds knows. Add it there so its matches can be predicted.",
+                    competition, m.Round, m.Home, m.Away);
+            else
+                logger.LogDebug("[LiveScores] Skipping {Home} vs {Away}: round {Round} isn't one players predict",
+                    m.Home, m.Away, m.Round);
             return (null, heldBack);
         }
 
