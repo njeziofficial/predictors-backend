@@ -192,6 +192,14 @@ internal sealed partial class FotMobSource(ILogger<FotMobSource> logger, IOption
             // "HT", or the minute as "67’" (see MatchReading.ParseMinute).
             stage = Text(liveTime, "short");
         }
+        else if (finished && status.TryGetProperty("reason", out var reason)
+            && Text(reason, "short") is ("AET" or "Pen" or "AP") and var decided)
+        {
+            // A knockout match decided after 90 minutes; its scoreStr is the score after extra
+            // time. Only these are passed on (see MatchReading.IsExtraTime), so a match that
+            // ended in normal time reads exactly as it always has.
+            stage = decided;
+        }
 
         return new ScrapedMatchDto
         {

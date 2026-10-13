@@ -27,6 +27,11 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
         var toScore = new List<string>();
         var heldBack = new HashSet<string>();
 
+        // Other competitions in kickoff order, so a two-legged tie's 1st leg is filed before its
+        // 2nd (see LegAsync). La Liga keeps the order the source gave.
+        if (Competitions.IdFor(competition) != Competitions.LaLiga)
+            matches = [.. matches.OrderBy(m => ParseKickoff(m.Time)?.Utc ?? DateTime.MaxValue)];
+
         foreach (var m in matches)
         {
             var (changedId, held) = await SyncMatchAsync(m, competition, ct);
@@ -54,7 +59,7 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
 
         var fixtureId = FixtureId(competition, m.Home, m.Away);
         var hasRound = !string.IsNullOrWhiteSpace(m.Round);
-        var weekId = WeekId(competition, m.Round);
+        var laLiga = Competitions.IdFor(competition) == Competitions.LaLiga;
         var newStatus = MapStatus(m);
         var heldBack = false;
 
@@ -88,6 +93,20 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
             return (null, heldBack);
         }
 
+        // Only a new fixture, or one still in "Week ?", needs its week. Null for a round that
+        // isn't predicted (Champions League qualifying) or can't be read.
+        var week = hasRound && (fixture is null || fixture.WeekId == UnknownWeekId(competition))
+            ? await WeekForAsync(m, competition, datedKickoff ?? scrapedKickoff?.Utc, ct)
+            : null;
+        var weekId = week?.Id ?? "";
+
+        if (fixture is null && week is null)
+        {
+            logger.LogDebug("[LiveScores] Skipping {Home} vs {Away}: round {Round} isn't one players predict",
+                m.Home, m.Away, m.Round);
+            return (null, heldBack);
+        }
+
         // A team plays once a round. If the week already has a match for either team, this is
         // that match under a spelling TeamNameNormalizer doesn't know yet: don't add it twice.
         if (fixture is null && await FindSameRoundMatchAsync(weekId, m, ct) is { } existing)
@@ -109,10 +128,10 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
             return (null, heldBack);
         }
 
-        if (hasRound && (fixture is null || fixture.WeekId == UnknownWeekId(competition)))
-            await EnsureWeekAsync(weekId, competition, m.Round, ct);
+        if (week is { } w)
+            await EnsureWeekAsync(w.Id, w.Name, competition, ct);
 
-        if (fixture is not null && hasRound && fixture.WeekId == UnknownWeekId(competition))
+        if (fixture is not null && week is not null && fixture.WeekId == UnknownWeekId(competition))
             await MoveOutOfUnknownWeekAsync(fixture, weekId, ct);
 
         if (fixture is null)
@@ -144,8 +163,11 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
 
         if (newStatus == FixtureStatus.Ended)
         {
-            fixture.FinalScoreHome = scoreHome;
-            fixture.FinalScoreAway = scoreAway;
+            if (laLiga || !EndAfterNinetyMinutes(fixture, m, scoreHome, scoreAway))
+            {
+                fixture.FinalScoreHome = scoreHome;
+                fixture.FinalScoreAway = scoreAway;
+            }
             fixture.LiveScoreHome = null;
             fixture.LiveScoreAway = null;
             fixture.LiveMinute = null;
@@ -158,6 +180,7 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
             // Back in play after a wrong "finished" reading: that result no longer stands.
             fixture.FinalScoreHome = null;
             fixture.FinalScoreAway = null;
+            if (!laLiga) TrackNormalTime(fixture, m, scoreHome, scoreAway);
         }
 
         var isEnded = newStatus == FixtureStatus.Ended;
@@ -176,13 +199,77 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
                 || teams.Contains(TeamNameNormalizer.Slug(f.AwayTeam)));
     }
 
-    private async Task EnsureWeekAsync(string weekId, string competition, string? round, CancellationToken ct)
+    // The week a match with a round belongs in. La Liga: "la-liga-week-8", as always. The
+    // Champions League: a matchday, or one leg of a knockout round; null for qualifying.
+    private async Task<(string Id, string Name)?> WeekForAsync(
+        ScrapedMatchDto m, string competition, DateTime? kickoff, CancellationToken ct)
+    {
+        var competitionId = Competitions.IdFor(competition);
+        if (competitionId != Competitions.ChampionsLeague)
+            return (WeekId(competition, m.Round), WeekName(competition, m.Round));
+
+        if (CompetitionRounds.ChampionsLeague(m.Round, kickoff) is not { } round) return null;
+        var leg = round.TwoLegged ? await LegAsync(competition, round, m, kickoff, ct) : 1;
+        var (key, name) = CompetitionRounds.Leg(round, leg);
+        return (CompetitionRounds.WeekId(competitionId, key), $"{competition} — {name}");
+    }
+
+    // Sources name the round ("Round of 16"), not the leg. The 2nd leg is the reverse fixture of
+    // a 1st leg already filed in that round, played after it (matches are synced in kickoff order).
+    private async Task<int> LegAsync(
+        string competition, CompetitionRounds.Round round, ScrapedMatchDto m, DateTime? kickoff, CancellationToken ct)
+    {
+        var firstLegWeek = CompetitionRounds.WeekId(Competitions.IdFor(competition), CompetitionRounds.Leg(round, 1).Key);
+        var reverse = await db.Fixtures.FindAsync([FixtureId(competition, m.Away, m.Home)], ct);
+        return reverse is not null && reverse.WeekId == firstLegWeek && (kickoff is null || reverse.Kickoff < kickoff) ? 2 : 1;
+    }
+
+    // Knockout matches that can go to extra time: the last score seen in normal time is kept
+    // (stoppage time and the break before extra time count; extra time doesn't).
+    private static void TrackNormalTime(Fixture f, ScrapedMatchDto m, int? home, int? away)
+    {
+        if (!CompetitionRounds.CanGoToExtraTime(f.WeekId)) return;
+        if (IsExtraTime(m.Stage)) f.WentToExtraTime = true;
+        else if (!f.WentToExtraTime) (f.RegularTimeScoreHome, f.RegularTimeScoreAway) = (home, away);
+    }
+
+    // Predictions are marked on the score after 90 minutes. Returns true when the final score
+    // has been dealt with here (set to the 90-minute score, or left for an admin), false when
+    // the scraped score stands as it is: a match that can't go to extra time, or didn't.
+    private bool EndAfterNinetyMinutes(Fixture f, ScrapedMatchDto m, int? home, int? away)
+    {
+        if (!CompetitionRounds.CanGoToExtraTime(f.WeekId)) return false;
+
+        if (f.WentToExtraTime || IsExtraTime(m.Stage))
+        {
+            f.WentToExtraTime = true;
+            (f.AfterExtraTimeHome, f.AfterExtraTimeAway) = (home, away);
+            if (f.RegularTimeScoreHome is not null)
+                (f.FinalScoreHome, f.FinalScoreAway) = (f.RegularTimeScoreHome, f.RegularTimeScoreAway);
+            else
+                logger.LogWarning("[LiveScores] {Home} vs {Away} went to extra time but its 90-minute score wasn't seen. " +
+                    "Enter it on the admin fixtures page.", f.HomeTeam, f.AwayTeam);
+            return true;
+        }
+
+        // Never seen live (the backend was asleep): a final reading can't tell a 90-minute result
+        // from one after extra time, so it isn't trusted. An admin's score is left as it is.
+        if (f.RegularTimeScoreHome is null)
+        {
+            logger.LogWarning("[LiveScores] {Home} vs {Away} finished {Score} without being seen live: it may have gone to " +
+                "extra time. Enter its 90-minute score on the admin fixtures page.", f.HomeTeam, f.AwayTeam, $"{home}-{away}");
+            return true;
+        }
+        return false;
+    }
+
+    private async Task EnsureWeekAsync(string weekId, string weekName, string competition, CancellationToken ct)
     {
         if (_addedWeeks.Contains(weekId) || await db.MatchWeeks.AnyAsync(w => w.Id == weekId, ct)) return;
         db.MatchWeeks.Add(new MatchWeek
         {
             Id = weekId,
-            Name = WeekName(competition, round),
+            Name = weekName,
             Competition = competition,
             CompetitionId = Competitions.IdFor(competition)
         });

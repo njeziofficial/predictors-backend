@@ -403,6 +403,13 @@ try
             "ALTER TABLE \"MatchWeeks\" ADD COLUMN IF NOT EXISTS \"CompetitionId\" character varying(50) NOT NULL DEFAULT 'la-liga';");
         await db.Database.ExecuteSqlRawAsync(
             "CREATE INDEX IF NOT EXISTS \"IX_MatchWeeks_CompetitionId\" ON \"MatchWeeks\" (\"CompetitionId\");");
+        // Knockout scores and each competition's own sources. Same SQL as
+        // db/supabase/2026-10-13-competition-scraping.sql.
+        foreach (var column in new[] { "RegularTimeScoreHome", "RegularTimeScoreAway", "AfterExtraTimeHome", "AfterExtraTimeAway" })
+            await db.Database.ExecuteSqlRawAsync(
+                $"ALTER TABLE \"Fixtures\" ADD COLUMN IF NOT EXISTS \"{column}\" integer NULL;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Fixtures\" ADD COLUMN IF NOT EXISTS \"WentToExtraTime\" boolean NOT NULL DEFAULT false;");
         await Competitions.SeedAsync(db);
 
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();

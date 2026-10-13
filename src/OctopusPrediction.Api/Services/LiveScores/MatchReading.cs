@@ -68,6 +68,8 @@ public static class MatchReading
         return CleanStage(m.Stage) switch
         {
             "FT" or "AET" or "AP" or "Finished" => FixtureStatus.Ended,
+            // Knockout matches decided after 90 minutes (never seen in La Liga).
+            "Pen" or "Pen." or "After Pen." or "After ET" => FixtureStatus.Ended,
             var s when IsHalfTime(s) => FixtureStatus.HalfTime,
             "Postp." or "Postponed" => FixtureStatus.Postponed,
             "Canc." or "Cancelled" or "Canceled" or "Aband." => FixtureStatus.Cancelled,
@@ -78,6 +80,20 @@ public static class MatchReading
 
     public static bool IsHalfTime(string? stage) =>
         CleanStage(stage) is { } s && s.Equals("HT", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether the stage says the match is in, or was decided by, extra time or penalties: a
+    /// minute past 90 that isn't stoppage time ("105'", but not "90+4'"), or the sources' words
+    /// for it ("ET", "Extra Time", "AET", "Pen", "After Pen."). Only knockout matches get here.
+    /// </summary>
+    public static bool IsExtraTime(string? stage)
+    {
+        var s = CleanStage(stage);
+        if (string.IsNullOrEmpty(s)) return false;
+        if (ParseMinute(s) is > 90) return true;
+        var words = s.ToLowerInvariant().Split([' ', '.', '-', '/'], StringSplitOptions.RemoveEmptyEntries);
+        return words.Any(w => w is "et" or "aet" or "ap" or "extra" or "pen" or "pens" or "penalties");
+    }
 
     public static int? ParseMinute(string? stage)
     {

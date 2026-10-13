@@ -14,6 +14,14 @@ public class Fixture
     public int? LiveScoreHome { get; set; }
     public int? LiveScoreAway { get; set; }
     public int? LiveMinute { get; set; }
+    // Knockout matches only (never La Liga): predictions are marked on the score after 90
+    // minutes, so the scraper keeps the last score it saw in normal time, and once a match goes
+    // to extra time the final score is that one. AfterExtraTime is the real end result, to show.
+    public int? RegularTimeScoreHome { get; set; }
+    public int? RegularTimeScoreAway { get; set; }
+    public bool WentToExtraTime { get; set; }
+    public int? AfterExtraTimeHome { get; set; }
+    public int? AfterExtraTimeAway { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public ICollection<Prediction> Predictions { get; set; } = [];
 }
