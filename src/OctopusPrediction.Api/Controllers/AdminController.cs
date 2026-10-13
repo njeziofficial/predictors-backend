@@ -38,6 +38,12 @@ public class AdminController(
     [RequirePermission(Permissions.SettingsManage)]
     public async Task<IActionResult> UpdateSettings(UpdateScraperSettingsRequest request)
     {
+        // These settings drive La Liga's scraping; its matches are filed under this name. Any
+        // other would put La Liga's fixtures in another competition's weeks and tables. Other
+        // competitions are switched on from the Competitions card instead.
+        if (Competitions.IdFor(request.Competition) != Competitions.LaLiga)
+            return BadRequest(new { message = "The scraper settings are La Liga's. Switch other competitions on from Competitions." });
+
         var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
         settings.Enabled = request.Enabled;
         settings.PollIntervalSeconds = request.PollIntervalSeconds;

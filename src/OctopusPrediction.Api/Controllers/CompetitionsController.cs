@@ -33,6 +33,9 @@ public class CompetitionsController(AppDbContext db, AppCache cache, Competition
     {
         var competition = await db.Competitions.FindAsync(id);
         if (competition is null) return NotFound(new { message = "Competition not found." });
+        // The main competition: switching it off would empty the game for every player.
+        if (id == Competitions.LaLiga && !request.Enabled)
+            return BadRequest(new { message = "La Liga can't be switched off." });
 
         if (competition.Enabled != request.Enabled)
         {
