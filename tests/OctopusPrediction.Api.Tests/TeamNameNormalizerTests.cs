@@ -58,7 +58,18 @@ public class TeamNameNormalizerTests
     [InlineData("sporting-cp", "Sporting CP", "Sporting Lisbon", "Sporting")]
     [InlineData("club-brugge", "Club Brugge", "Club Brugge KV", "Club Bruges")]
     [InlineData("copenhagen", "FC Copenhagen", "FC København", "Copenhagen")]
-    [InlineData("bodo-glimt", "Bodø/Glimt", "FK Bodø/Glimt", "Bodo/Glimt")]
+    [InlineData("bodo-glimt", "Bodø/Glimt", "FK Bodø/Glimt", "Bodo/Glimt", "Bodø / Glimt")]
+    // Spellings seen side by side on FotMob, Flashscore, BBC and ESPN for the same matches.
+    [InlineData("sabah", "Sabah FK", "Sabah Baku")]
+    [InlineData("roma", "Roma", "AS Roma")]
+    [InlineData("viking", "Viking", "Viking FK")]
+    [InlineData("feyenoord", "Feyenoord", "Feyenoord Rotterdam")]
+    [InlineData("lask", "LASK", "LASK Linz")]
+    [InlineData("atletico-madrid", "Atlético Madrid", "Atl. Madrid", "Atletico Madrid")]
+    [InlineData("manchester-united", "Manchester United", "Manchester Utd")]
+    [InlineData("psv", "PSV", "PSV Eindhoven")]
+    [InlineData("porto", "FC Porto", "Porto")]
+    [InlineData("stuttgart", "Stuttgart", "VfB Stuttgart")]
     [InlineData("red-star-belgrade", "Crvena Zvezda", "Red Star Belgrade", "FK Crvena zvezda")]
     public void ChampionsLeagueSpellingsMeet(string slug, params string[] spellings) =>
         Assert.All(spellings, s => Assert.Equal(slug, Slug(s)));

@@ -126,7 +126,3 @@ public class CompetitionsController(AppDbContext db, AppCache cache, Competition
         return await db.Users.FirstOrDefaultAsync(u => u.Id == userId);
     }
 }
-
-public record CompetitionScrapingDto(
-    string Id, string Name, bool Enabled, string SourceMode, string SourceName,
-    IReadOnlyList<string> SourceOrder, IReadOnlyList<string> AvailableSources);
