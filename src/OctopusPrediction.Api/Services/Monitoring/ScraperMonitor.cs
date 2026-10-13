@@ -14,7 +14,19 @@ public record PollRecord(
     int Queued,
     // Ok, NoMatches (every source tried came back empty or failed) or Resting (every source cooling down).
     string Outcome,
-    string? Problem);
+    string? Problem,
+    // Which competition the poll was for.
+    string Competition = "La Liga");
+
+// Why the scraper's wait ended.
+public enum WakeReason
+{
+    Elapsed,
+    // "Poll now" on the Scraper Health page: every competition polls.
+    PollNow,
+    // A competition was switched on: only the competitions other than La Liga poll.
+    CompetitionSwitchedOn,
+}
 
 public record SourceActivity(string Name, DateTime? LastAttemptAt, DateTime? LastSuccessAt, int LastMatches, int LastDurationMs, string? LastResult);
 
@@ -105,19 +117,30 @@ public sealed class ScraperMonitor
     /// <summary>Cuts the scraper's current wait short so it polls straight away.</summary>
     public void RequestPollNow() => _pollNow.Writer.TryWrite(true);
 
-    /// <summary>The scraper's wait between polls; returns early when a poll is requested.</summary>
-    public async Task WaitForNextPollAsync(TimeSpan delay, CancellationToken ct)
+    /// <summary>Wakes the scraper to poll the competitions other than La Liga (one was just switched on).</summary>
+    public void RequestCompetitionPoll() => _competitionPoll.Writer.TryWrite(true);
+
+    private readonly Channel<bool> _competitionPoll = Channel.CreateBounded<bool>(
+        new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropWrite });
+
+    /// <summary>
+    /// The scraper's wait between polls: returns early, saying why, when a poll is requested or
+    /// a competition is switched on. Elapsed otherwise.
+    /// </summary>
+    public async Task<WakeReason> WaitAsync(TimeSpan delay, CancellationToken ct)
     {
+        if (delay <= TimeSpan.Zero) return WakeReason.Elapsed;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(delay);
-        try
-        {
-            await _pollNow.Reader.WaitToReadAsync(cts.Token);
-            _pollNow.Reader.TryRead(out _);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            // The wait ran its course.
-        }
+        var pollNow = _pollNow.Reader.WaitToReadAsync(cts.Token).AsTask();
+        var switchedOn = _competitionPoll.Reader.WaitToReadAsync(cts.Token).AsTask();
+        // Ends when either signal arrives or the delay runs out (both waits are then cancelled).
+        await Task.WhenAny(pollNow, switchedOn);
+        cts.Cancel(); // let go of the other wait
+        ct.ThrowIfCancellationRequested();
+
+        if (_pollNow.Reader.TryRead(out _)) return WakeReason.PollNow;
+        if (_competitionPoll.Reader.TryRead(out _)) return WakeReason.CompetitionSwitchedOn;
+        return WakeReason.Elapsed;
     }
 }

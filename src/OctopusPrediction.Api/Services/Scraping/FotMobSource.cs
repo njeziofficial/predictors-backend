@@ -41,6 +41,13 @@ internal sealed partial class FotMobSource(ILogger<FotMobSource> logger, IOption
     private Dictionary<string, ScrapedMatchDto> _season = [];
     private DateTime _seasonReadAt = DateTime.MinValue;
 
+    // The day list holds every league's matches, so one read serves every competition. Each
+    // read is kept here; another competition's poll soon after reuses it instead of asking
+    // FotMob again. La Liga's copy only ever stores, never reuses, so it reads FotMob as it always has.
+    private static readonly Dictionary<string, (string Json, DateTime At)> SharedDayLists = new();
+    private static readonly TimeSpan DayListReuse = TimeSpan.FromSeconds(45);
+    private readonly bool _reusesDayLists = options.Value.CompetitionId is not null;
+
     public async Task<ScrapedMatchDto[]> ScrapeAsync(IPage page, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
@@ -51,7 +58,7 @@ internal sealed partial class FotMobSource(ILogger<FotMobSource> logger, IOption
         var dates = now.TimeOfDay < LateMatchGrace ? new[] { now.Date.AddDays(-1), now.Date } : [now.Date];
         foreach (var date in dates)
         {
-            var json = await GetJsonAsync(page, $"{ApiBase}/matches?date={date:yyyyMMdd}&timezone=UTC&ccode3=GBR");
+            var json = await DayListAsync(page, $"{ApiBase}/matches?date={date:yyyyMMdd}&timezone=UTC&ccode3=GBR", now);
             if (json is null) return [];
             foreach (var (id, match) in ParseDay(json)) today[id] = match;
         }
@@ -72,6 +79,23 @@ internal sealed partial class FotMobSource(ILogger<FotMobSource> logger, IOption
             matches[id] = match;
         }
         return [.. matches.Values];
+    }
+
+    private async Task<string?> DayListAsync(IPage page, string url, DateTime now)
+    {
+        lock (SharedDayLists)
+            if (_reusesDayLists && SharedDayLists.TryGetValue(url, out var shared) && now - shared.At < DayListReuse)
+                return shared.Json;
+
+        var json = await GetJsonAsync(page, url);
+        if (json is not null)
+            lock (SharedDayLists)
+            {
+                foreach (var stale in SharedDayLists.Where(d => now - d.Value.At > DayListReuse).Select(d => d.Key).ToList())
+                    SharedDayLists.Remove(stale);
+                SharedDayLists[url] = (json, now);
+            }
+        return json;
     }
 
     // Null when the list couldn't be read; the caller keeps the copy it has.

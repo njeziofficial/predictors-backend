@@ -18,6 +18,25 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
     private const string DefaultUrl = "https://www.flashscore.com/football/spain/laliga/";
     private readonly string _url = options.Value.Sources.GetValueOrDefault("Flashscore", DefaultUrl);
 
+    // A match page's breadcrumb ends in its round: "LaLiga - Round 8", "Champions League - League
+    // phase - Round 3", "Champions League - 1/8-finals". La Liga reads "Round N" as it always
+    // has; another competition takes the last part, which CompetitionRounds understands.
+    private readonly string _breadcrumbRoundScript = options.Value.CompetitionId is null
+        ? """
+            () => {
+                const crumbs = document.querySelector('[class*="detail__breadcrumbs"]')?.textContent ?? '';
+                const match = crumbs.match(/Round\s+\d+/i);
+                return match ? match[0] : null;
+            }
+            """
+        : """
+            () => {
+                const crumbs = document.querySelector('[class*="detail__breadcrumbs"]')?.textContent ?? '';
+                const parts = crumbs.split(' - ').map(p => p.trim()).filter(p => p);
+                return parts.length > 1 ? parts[parts.length - 1] : null;
+            }
+            """;
+
     // A match's round never changes, so rounds looked up elsewhere are remembered (by row id)
     // for as long as the backend is up. Lookups therefore happen about once per wake, not per poll.
     private readonly Dictionary<string, string> _roundById = new();
@@ -144,13 +163,7 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
             await page.GoToAsync($"https://www.flashscore.com/match/{matchId}/#/match-summary",
                 new NavigationOptions { WaitUntil = [WaitUntilNavigation.Load], Timeout = 30_000 });
             await Task.Delay(2_000, ct);
-            var round = await page.EvaluateFunctionAsync<string?>("""
-                () => {
-                    const crumbs = document.querySelector('[class*="detail__breadcrumbs"]')?.textContent ?? '';
-                    const match = crumbs.match(/Round\s+\d+/i);
-                    return match ? match[0] : null;
-                }
-                """);
+            var round = await page.EvaluateFunctionAsync<string?>(_breadcrumbRoundScript);
             if (round is null) continue;
             m.Round = round;
             _roundById[m.Id] = round;

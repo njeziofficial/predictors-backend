@@ -29,6 +29,21 @@ public static class Competitions
             ? Default
             : new string(name.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
 
+    // Another competition's sources until the system admin picks: FotMob first, a different
+    // lead site from La Liga's usual Flashscore, so neither site sees two competitions' polls;
+    // Flashscore if FotMob comes back empty or refuses.
+    public static ScraperSettings DefaultSourcePlan => new()
+    {
+        SourceMode = Scraping.SourceModes.Fallback,
+        SourceName = "FotMob",
+        SourceOrder = "FotMob,Flashscore",
+    };
+
+    // A competition's source choice in the shape SourcePlan reads. Not for La Liga, which keeps
+    // ScraperSettings.
+    public static ScraperSettings SourcePlanOf(Competition c) =>
+        c.SourceMode is null ? DefaultSourcePlan : new() { SourceMode = c.SourceMode, SourceName = c.SourceName ?? "", SourceOrder = c.SourceOrder ?? "" };
+
     // Inserts any competitions the table doesn't have yet; existing rows are left alone.
     public static async Task SeedAsync(AppDbContext db)
     {

@@ -49,6 +49,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             c.HasKey(x => x.Id);
             c.Property(x => x.Id).HasMaxLength(50);
             c.Property(x => x.Name).HasMaxLength(100);
+            c.Property(x => x.SourceMode).HasMaxLength(20);
+            c.Property(x => x.SourceName).HasMaxLength(50);
+            c.Property(x => x.SourceOrder).HasMaxLength(500);
         });
 
         mb.Entity<Fixture>(f =>

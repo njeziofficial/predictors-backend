@@ -22,13 +22,16 @@ public static class MatchWindows
     private static readonly TimeSpan LiveGrace = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan Lookahead = TimeSpan.FromDays(21);
 
-    // Upcoming and current match windows, merged where they overlap, in order. Competitions
-    // switched off don't count: nobody is predicting them, so they needn't keep anything awake.
-    public static async Task<IReadOnlyList<TimeWindow>> ForMatchesAsync(AppDbContext db, DateTime now, CancellationToken ct = default)
+    // Upcoming and current match windows, merged where they overlap, in order: every
+    // competition's (to keep the backend awake), or one's (the scraper's schedule for it).
+    // Competitions switched off don't count: nobody is predicting them.
+    public static async Task<IReadOnlyList<TimeWindow>> ForMatchesAsync(
+        AppDbContext db, DateTime now, CancellationToken ct = default, string? competitionId = null)
     {
         var disabled = await Competitions.DisabledIdsAsync(db, ct);
         var fixtures = await db.Fixtures.AsNoTracking()
             .Where(f => !disabled.Contains(f.Week.CompetitionId))
+            .Where(f => competitionId == null || f.Week.CompetitionId == competitionId)
             .Where(f => f.Status == FixtureStatus.PreMatch || f.Status == FixtureStatus.Live || f.Status == FixtureStatus.HalfTime)
             .Where(f => f.Kickoff > now - MaxLiveAfterKickoff && f.Kickoff < now + Lookahead)
             .Select(f => new { f.Kickoff, f.Status })

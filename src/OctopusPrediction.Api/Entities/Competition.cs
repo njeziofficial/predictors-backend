@@ -11,4 +11,11 @@ public class Competition
     public bool Enabled { get; set; }
     public int SortOrder { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    // Which sites this competition is scraped from, as ScraperSettings' fields of the same names
+    // (see SourcePlan). Null: Competitions.DefaultSourcePlan. Never set for La Liga, which keeps
+    // ScraperSettings. Changed by the system admin only.
+    public string? SourceMode { get; set; }
+    public string? SourceName { get; set; }
+    public string? SourceOrder { get; set; }
 }

@@ -25,6 +25,19 @@ internal sealed class FoxSportsSource(ILogger<FoxSportsSource> logger, IOptions<
     private const string DefaultUrl = "https://www.foxsports.com/soccer/la-liga/scores";
     private readonly string _baseUrl = options.Value.Sources.GetValueOrDefault("FoxSports", DefaultUrl);
 
+    // La Liga's cards link to "/soccer/la-liga-..."; another competition's to its own league
+    // path ("/soccer/uefa-champions-league/scores" -> "/soccer/uefa-champions-league-").
+    private readonly string _script = options.Value.CompetitionId is null
+        ? ExtractScript
+        : ExtractScript.Replace("/soccer/la-liga-", $"/soccer/{LeaguePath(options.Value.Sources.GetValueOrDefault("FoxSports", DefaultUrl))}-");
+
+    private static string LeaguePath(string url)
+    {
+        var segments = new Uri(url).AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var soccer = Array.IndexOf(segments, "soccer");
+        return soccer >= 0 && soccer + 1 < segments.Length ? segments[soccer + 1] : "la-liga";
+    }
+
     private const string ExtractScript = """
         () => {
             const results = [];
@@ -88,7 +101,7 @@ internal sealed class FoxSportsSource(ILogger<FoxSportsSource> logger, IOptions<
 
         await Task.Delay(3_000, ct);
 
-        var json = await page.EvaluateFunctionAsync<string>(ExtractScript);
+        var json = await page.EvaluateFunctionAsync<string>(_script);
         if (string.IsNullOrWhiteSpace(json)) return [];
 
         var matches = JsonSerializer.Deserialize<ScrapedMatchDto[]>(json, ScrapingJson.Options) ?? [];

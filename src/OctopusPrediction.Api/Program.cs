@@ -128,6 +128,10 @@ builder.Services.AddSingleton<IMatchSource, FotMobSource>();
 builder.Services.AddSingleton<IMatchSource, FoxSportsSource>();
 // Rests a source that has started refusing the scraper; shown on the admin status card.
 builder.Services.AddSingleton<SourceGuard>();
+// Each competition's own copy of the sources (La Liga's are the ones registered above), and the
+// pages loaded from each site in the last hour, which the other competitions stay under.
+builder.Services.AddSingleton<CompetitionSources>();
+builder.Services.AddSingleton<SiteBudget>();
 // What the scraper and the points check are doing, for the Scraper Health page.
 builder.Services.AddSingleton<ScraperMonitor>();
 builder.Services.AddHostedService<LiveScraperBackgroundService>();
@@ -410,6 +414,12 @@ try
                 $"ALTER TABLE \"Fixtures\" ADD COLUMN IF NOT EXISTS \"{column}\" integer NULL;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"Fixtures\" ADD COLUMN IF NOT EXISTS \"WentToExtraTime\" boolean NOT NULL DEFAULT false;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Competitions\" ADD COLUMN IF NOT EXISTS \"SourceMode\" character varying(20) NULL;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Competitions\" ADD COLUMN IF NOT EXISTS \"SourceName\" character varying(50) NULL;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Competitions\" ADD COLUMN IF NOT EXISTS \"SourceOrder\" character varying(500) NULL;");
         await Competitions.SeedAsync(db);
 
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
