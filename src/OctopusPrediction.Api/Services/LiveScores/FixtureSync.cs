@@ -31,7 +31,7 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
         {
             var (changedId, held) = await SyncMatchAsync(m, competition, ct);
             if (changedId is not null) toScore.Add(changedId);
-            if (held) heldBack.Add(FixtureId(m.Home, m.Away));
+            if (held) heldBack.Add(FixtureId(competition, m.Home, m.Away));
         }
 
         await db.SaveChangesAsync(ct);
@@ -52,7 +52,7 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
     {
         if (string.IsNullOrWhiteSpace(m.Home) || string.IsNullOrWhiteSpace(m.Away)) return (null, false);
 
-        var fixtureId = FixtureId(m.Home, m.Away);
+        var fixtureId = FixtureId(competition, m.Home, m.Away);
         var hasRound = !string.IsNullOrWhiteSpace(m.Round);
         var weekId = WeekId(competition, m.Round);
         var newStatus = MapStatus(m);
@@ -183,7 +183,8 @@ public sealed class FixtureSync(AppDbContext db, IScoringService scoring, ILogge
         {
             Id = weekId,
             Name = WeekName(competition, round),
-            Competition = competition
+            Competition = competition,
+            CompetitionId = Competitions.IdFor(competition)
         });
         _addedWeeks.Add(weekId);
         logger.LogInformation("[LiveScores] Created MatchWeek: {Id}", weekId);

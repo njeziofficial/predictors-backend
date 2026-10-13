@@ -49,9 +49,12 @@ internal class ReminderBackgroundService(
 
         var now = DateTime.UtcNow;
 
+        // A competition switched off gets no reminders; its weeks are left unmarked, so one
+        // still ahead when it's switched back on is reminded about then.
+        var disabled = await Competitions.DisabledIdsAsync(db, ct);
         var candidateWeeks = await db.MatchWeeks
             .Include(w => w.Fixtures)
-            .Where(w => w.ReminderSentAt == null)
+            .Where(w => w.ReminderSentAt == null && !disabled.Contains(w.CompetitionId))
             .ToListAsync(ct);
 
         foreach (var week in candidateWeeks)

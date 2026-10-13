@@ -19,11 +19,15 @@ public class AdminFixturesController(AppDbContext db, IScoringService scoring) :
     [HttpPost("weeks")]
     public async Task<IActionResult> CreateWeek(WeekRequest request)
     {
+        var competitionId = await CompetitionIdForAsync(request);
+        if (competitionId is null) return BadRequest(new { message = $"Unknown competition: {request.CompetitionId}" });
+
         var week = new MatchWeek
         {
             Id = Guid.NewGuid().ToString(),
             Name = request.Name,
-            Competition = request.Competition
+            Competition = request.Competition,
+            CompetitionId = competitionId
         };
         db.MatchWeeks.Add(week);
         await db.SaveChangesAsync();
@@ -36,10 +40,24 @@ public class AdminFixturesController(AppDbContext db, IScoringService scoring) :
         var week = await db.MatchWeeks.Include(w => w.Fixtures).FirstOrDefaultAsync(w => w.Id == id);
         if (week is null) return NotFound(new { message = "Week not found." });
 
+        var competitionId = await CompetitionIdForAsync(request);
+        if (competitionId is null) return BadRequest(new { message = $"Unknown competition: {request.CompetitionId}" });
+
         week.Name = request.Name;
         week.Competition = request.Competition;
+        week.CompetitionId = competitionId;
         await db.SaveChangesAsync();
         return Ok(FixtureMappers.ToDto(week));
+    }
+
+    // The named competition (null if there's no such one), else the one called Competition, else La Liga.
+    private async Task<string?> CompetitionIdForAsync(WeekRequest request)
+    {
+        var known = await db.Competitions.Select(c => c.Id).ToListAsync();
+        if (!string.IsNullOrWhiteSpace(request.CompetitionId))
+            return known.Count == 0 || known.Contains(request.CompetitionId) ? request.CompetitionId : null;
+        var byName = Competitions.IdFor(request.Competition);
+        return known.Contains(byName) ? byName : Competitions.Default;
     }
 
     [HttpDelete("weeks/{id}")]

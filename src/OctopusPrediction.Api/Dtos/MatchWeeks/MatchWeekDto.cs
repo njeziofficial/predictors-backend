@@ -6,5 +6,6 @@ public record MatchWeekDto(
     string Id,
     string Name,
     string Competition,
+    string CompetitionId,
     IEnumerable<FixtureDto> Fixtures
 );

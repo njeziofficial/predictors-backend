@@ -20,6 +20,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ConversationParticipant> ConversationParticipants => Set<ConversationParticipant>();
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<MatchUpdate> MatchUpdates => Set<MatchUpdate>();
+    public DbSet<Competition> Competitions => Set<Competition>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -39,6 +40,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             w.Property(x => x.Id).HasMaxLength(150);
             w.Property(x => x.Name).HasMaxLength(200);
             w.Property(x => x.Competition).HasMaxLength(100);
+            w.Property(x => x.CompetitionId).HasMaxLength(50);
+            w.HasIndex(x => x.CompetitionId);
+        });
+
+        mb.Entity<Competition>(c =>
+        {
+            c.HasKey(x => x.Id);
+            c.Property(x => x.Id).HasMaxLength(50);
+            c.Property(x => x.Name).HasMaxLength(100);
         });
 
         mb.Entity<Fixture>(f =>

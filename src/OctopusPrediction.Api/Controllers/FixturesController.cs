@@ -7,6 +7,7 @@ using OctopusPrediction.Api.Services.Caching;
 
 namespace OctopusPrediction.Api.Controllers;
 
+// Fixtures of a competition that's switched off are hidden from players, as its weeks are.
 [ApiController]
 [Route("api/fixtures")]
 [Authorize]
@@ -15,7 +16,9 @@ public class FixturesController(AppDbContext db, AppCache cache) : ControllerBas
     [HttpGet]
     public async Task<IActionResult> GetAll([FromQuery] string? weekId, [FromQuery] string? status)
     {
-        IEnumerable<(FixtureStatus Status, FixtureDto Fixture)> fixtures = (await cache.WeeksAsync(db)).Fixtures;
+        var weeks = await cache.WeeksAsync(db);
+        var visible = await VisibleAsync(weeks);
+        IEnumerable<(FixtureStatus Status, FixtureDto Fixture)> fixtures = weeks.Fixtures.Where(f => visible(f.Fixture));
 
         if (!string.IsNullOrEmpty(weekId))
             fixtures = fixtures.Where(f => f.Fixture.WeekId == weekId);
@@ -29,8 +32,16 @@ public class FixturesController(AppDbContext db, AppCache cache) : ControllerBas
     [HttpGet("{id}")]
     public async Task<IActionResult> GetById(string id)
     {
-        var fixture = (await cache.WeeksAsync(db)).FixturesById.GetValueOrDefault(id);
-        if (fixture is null) return NotFound();
+        var weeks = await cache.WeeksAsync(db);
+        var fixture = weeks.FixturesById.GetValueOrDefault(id);
+        if (fixture is null || !(await VisibleAsync(weeks))(fixture)) return NotFound();
         return Ok(fixture);
+    }
+
+    private async Task<Func<FixtureDto, bool>> VisibleAsync(WeeksSnapshot weeks)
+    {
+        var competitions = await cache.CompetitionsAsync(db);
+        var isAdmin = User.IsInRole("Admin");
+        return f => weeks.ById.TryGetValue(f.WeekId, out var w) && competitions.IsVisible(w.CompetitionId, isAdmin);
     }
 }

@@ -388,6 +388,23 @@ try
         await db.Database.ExecuteSqlRawAsync(
             "CREATE INDEX IF NOT EXISTS \"IX_MatchUpdates_ProcessedAt\" ON \"MatchUpdates\" (\"ProcessedAt\");");
 
+        // Competitions, each with its own weeks and tables. Every week from before this is La Liga's.
+        // Same SQL as db/supabase/2026-10-13-competitions.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "Competitions" (
+                "Id" character varying(50) NOT NULL PRIMARY KEY,
+                "Name" character varying(100) NOT NULL,
+                "Enabled" boolean NOT NULL,
+                "SortOrder" integer NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"MatchWeeks\" ADD COLUMN IF NOT EXISTS \"CompetitionId\" character varying(50) NOT NULL DEFAULT 'la-liga';");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_MatchWeeks_CompetitionId\" ON \"MatchWeeks\" (\"CompetitionId\");");
+        await Competitions.SeedAsync(db);
+
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         await DbSeeder.SeedAdminUserAsync(db, builder.Configuration, seedLogger);
 

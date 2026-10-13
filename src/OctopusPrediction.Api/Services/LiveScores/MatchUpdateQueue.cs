@@ -41,8 +41,8 @@ public sealed class MatchUpdateQueue(IServiceScopeFactory scopeFactory, ILogger<
         foreach (var m in matches)
         {
             if (string.IsNullOrWhiteSpace(m.Home) || string.IsNullOrWhiteSpace(m.Away)) continue;
-            var fixtureId = MatchReading.FixtureId(m.Home, m.Away);
-            var fingerprint = MatchReading.Fingerprint(m);
+            var fixtureId = MatchReading.FixtureId(competition, m.Home, m.Away);
+            var fingerprint = MatchReading.Fingerprint(m, competition);
             if (_last.TryGetValue(fixtureId, out var last) && last.Fingerprint == fingerprint && now - last.QueuedAt < ResyncAfter)
                 continue;
             // A source may list the same match twice (e.g. FotMob's day and season lists): keep the last.

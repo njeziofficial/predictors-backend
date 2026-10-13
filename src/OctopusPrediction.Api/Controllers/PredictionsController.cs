@@ -56,6 +56,10 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
 
         if (week is null) return NotFound(new { message = "Week not found." });
 
+        // Admins can see a competition that's switched off, but nobody can predict it.
+        if ((await cache.CompetitionsAsync(db)).DisabledIds.Contains(week.CompetitionId))
+            return StatusCode(403, new { message = $"{week.Competition} isn't open for predictions." });
+
         // A match is open until KickoffLockLead before its kickoff, or until the scraper sees it
         // start, whichever comes first. Postponed and cancelled matches can't be predicted.
         var lockAt = DateTime.UtcNow + KickoffLockLead;

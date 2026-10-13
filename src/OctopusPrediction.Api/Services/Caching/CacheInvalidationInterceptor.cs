@@ -19,6 +19,8 @@ public sealed class CacheInvalidationInterceptor(AppCache cache, LiveUpdateNotif
         [typeof(PreviousPoints)] = [CacheRegion.Leaderboard],
         [typeof(User)] = [CacheRegion.Leaderboard, CacheRegion.Access, CacheRegion.People],
         [typeof(ScraperSettings)] = [CacheRegion.Settings],
+        // Switching a competition on or off changes which weeks and tables players can see.
+        [typeof(Competition)] = [CacheRegion.Settings, CacheRegion.Fixtures, CacheRegion.Leaderboard],
         [typeof(RolePermission)] = [CacheRegion.Access],
         [typeof(UserPermission)] = [CacheRegion.Access],
     };

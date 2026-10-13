@@ -13,11 +13,17 @@ public static class MatchReading
 {
     // Team-name based (not source-specific-id based) so that whichever source syncs a
     // given match, it resolves to the same Fixture row instead of creating a duplicate.
-    public static string FixtureId(string home, string away) =>
-        $"fs-{TeamNameNormalizer.Slug(home)}-vs-{TeamNameNormalizer.Slug(away)}";
+    // Other competitions add their id: the same two clubs can meet in La Liga and in a cup or
+    // the Champions League in one season. La Liga keeps the ids it had before competitions.
+    public static string FixtureId(string competition, string home, string away)
+    {
+        var competitionId = Competitions.IdFor(competition);
+        var prefix = competitionId == Competitions.LaLiga ? "fs" : $"fs-{competitionId}";
+        return $"{prefix}-{TeamNameNormalizer.Slug(home)}-vs-{TeamNameNormalizer.Slug(away)}";
+    }
 
     public static string WeekId(string competition, string? round) =>
-        $"{Slug(competition)}-week-{NormalizeRound(round)}";
+        $"{Competitions.IdFor(competition)}-week-{NormalizeRound(round)}";
 
     public static string WeekName(string competition, string? round) =>
         $"{competition} — Week {NormalizeRound(round)}";
@@ -31,18 +37,15 @@ public static class MatchReading
         return parts.Length >= 2 ? parts[^1] : round.Trim();
     }
 
-    private static string Slug(string name) =>
-        new string(name.ToLower().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray()).Trim('-');
-
     /// <summary>
     /// A hash of everything the row would change on its fixture. The same reading from any source
     /// gives the same fingerprint, so an unchanged match is skipped however it was scraped.
     /// </summary>
-    public static string Fingerprint(ScrapedMatchDto m)
+    public static string Fingerprint(ScrapedMatchDto m, string competition)
     {
         var kickoff = ParseKickoff(m.Time) is { HasDate: true } k ? k.Utc.ToString("O") : "";
         var reading = string.Join('|',
-            FixtureId(m.Home, m.Away), MapStatus(m), ParseScore(m.ScoreHome), ParseScore(m.ScoreAway),
+            FixtureId(competition, m.Home, m.Away), MapStatus(m), ParseScore(m.ScoreHome), ParseScore(m.ScoreAway),
             ParseMinute(m.Stage), kickoff, NormalizeRound(m.Round));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(reading)));
     }

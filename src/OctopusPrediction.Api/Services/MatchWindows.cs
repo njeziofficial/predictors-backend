@@ -22,10 +22,13 @@ public static class MatchWindows
     private static readonly TimeSpan LiveGrace = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan Lookahead = TimeSpan.FromDays(21);
 
-    // Upcoming and current match windows, merged where they overlap, in order.
+    // Upcoming and current match windows, merged where they overlap, in order. Competitions
+    // switched off don't count: nobody is predicting them, so they needn't keep anything awake.
     public static async Task<IReadOnlyList<TimeWindow>> ForMatchesAsync(AppDbContext db, DateTime now, CancellationToken ct = default)
     {
+        var disabled = await Competitions.DisabledIdsAsync(db, ct);
         var fixtures = await db.Fixtures.AsNoTracking()
+            .Where(f => !disabled.Contains(f.Week.CompetitionId))
             .Where(f => f.Status == FixtureStatus.PreMatch || f.Status == FixtureStatus.Live || f.Status == FixtureStatus.HalfTime)
             .Where(f => f.Kickoff > now - MaxLiveAfterKickoff && f.Kickoff < now + Lookahead)
             .Select(f => new { f.Kickoff, f.Status })
@@ -49,8 +52,9 @@ public static class MatchWindows
         var settings = await db.ScraperSettings.AsNoTracking().FirstOrDefaultAsync(ct);
         if (settings?.ReminderEnabled == true)
         {
+            var disabled = await Competitions.DisabledIdsAsync(db, ct);
             var firstKickoffs = await db.MatchWeeks.AsNoTracking()
-                .Where(w => w.ReminderSentAt == null)
+                .Where(w => w.ReminderSentAt == null && !disabled.Contains(w.CompetitionId))
                 .Select(w => w.Fixtures.Where(f => f.Status == FixtureStatus.PreMatch).Min(f => (DateTime?)f.Kickoff))
                 .ToListAsync(ct);
             foreach (var kickoff in firstKickoffs.OfType<DateTime>().Where(k => k > now))

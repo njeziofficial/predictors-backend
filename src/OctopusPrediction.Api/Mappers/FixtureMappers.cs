@@ -22,7 +22,8 @@ public static class FixtureMappers
         week.Id,
         week.Name,
         week.Competition,
-        week.Fixtures.OrderBy(f => f.Kickoff).Select(ToDto)
+        week.CompetitionId,
+        week.Fixtures.OrderBy(f => f.Kickoff).Select(ToDto).ToList()
     );
 
     public static string MapStatus(FixtureStatus s) => s switch

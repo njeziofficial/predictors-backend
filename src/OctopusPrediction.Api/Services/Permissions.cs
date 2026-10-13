@@ -33,6 +33,7 @@ public static class Permissions
     public const string SettingsView = "settings.view";
     public const string SettingsManage = "settings.manage";
     public const string PredictionRulesManage = "predictions.rules";
+    public const string CompetitionsManage = "competitions.manage";
     public const string MessagesBroadcast = "messages.broadcast";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
@@ -67,6 +68,8 @@ public static class Permissions
             "Change the scraper and reminders, lock predictions and open or close registration.", true),
         new(PredictionRulesManage, "Settings", "Change prediction rules",
             "Choose whether incomplete predictions are allowed, whether submitted predictions are final, and when a week locks.", false),
+        new(CompetitionsManage, "Settings", "Switch competitions on or off",
+            "Open a competition (like the Champions League) to players, or close it. A closed one is hidden, can't be predicted and isn't scraped.", false),
         new(MessagesBroadcast, "Messages", "Send announcements",
             "Message every player, or a chosen group, at once. Players can reply in their chat with you.", true),
     ];
