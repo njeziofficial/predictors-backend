@@ -55,6 +55,11 @@ public static class MatchReading
     // to parsing Stage text for sources that only expose that (Livescore, BBC Sport).
     public static FixtureStatus MapStatus(ScrapedMatchDto m)
     {
+        // A match called off says so in words, and that wins over everything else: an abandoned
+        // match keeps the score it had when play stopped and has no live marker, which would
+        // otherwise read as a finished match and be marked on that score.
+        if (CalledOff(m.Stage) is { } calledOff) return calledOff;
+
         // Flashscore always supplies both flags (true/false, never absent). When present,
         // trust them completely — a finished Flashscore match has both flags false and no
         // Stage text at all, which the text-parsing fallback below would misread as PreMatch.
@@ -71,12 +76,27 @@ public static class MatchReading
             // Knockout matches decided after 90 minutes (never seen in La Liga).
             "Pen" or "Pen." or "After Pen." or "After ET" => FixtureStatus.Ended,
             var s when IsHalfTime(s) => FixtureStatus.HalfTime,
-            "Postp." or "Postponed" => FixtureStatus.Postponed,
-            "Canc." or "Cancelled" or "Canceled" or "Aband." => FixtureStatus.Cancelled,
             var s when s is not null && (s.EndsWith("'") || int.TryParse(s.Split('+')[0], out _)) => FixtureStatus.Live,
             _ => FixtureStatus.PreMatch
         };
     }
+
+    /// <summary>
+    /// Postponed or Cancelled when the stage text says the match was called off, else null.
+    /// Abandoned, suspended and interrupted matches count as postponed, as FotMob reports them:
+    /// La Liga finishes or replays them later, so they're neither played nor gone for good.
+    /// Each source's own words: Flashscore "Postp."/"Abn"/"Canc.", BBC "Suspended"/"Postponed",
+    /// Livescore "Postp."/"Aband."/"Canc.", ESPN "Abandoned"/"Postponed"/"Canceled".
+    /// </summary>
+    public static FixtureStatus? CalledOff(string? stage) =>
+        CleanStage(stage)?.TrimEnd('.').ToLowerInvariant() switch
+        {
+            "postp" or "postponed" or "pp" or "ppd"
+                or "abn" or "aban" or "aband" or "abandoned"
+                or "susp" or "suspended" or "int" or "interrupted" => FixtureStatus.Postponed,
+            "canc" or "cancelled" or "canceled" => FixtureStatus.Cancelled,
+            _ => null,
+        };
 
     public static bool IsHalfTime(string? stage) =>
         CleanStage(stage) is { } s && s.Equals("HT", StringComparison.OrdinalIgnoreCase);

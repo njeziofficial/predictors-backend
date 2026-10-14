@@ -30,6 +30,20 @@ public static class SourcePlan
 
     public static string FormatOrder(IEnumerable<string> names) => string.Join(",", names);
 
+    /// <summary>
+    /// A saved plan as the admin page shows it: only sources still registered (a retired one,
+    /// like Fox Sports, is left out, as ForPoll skips it), and a single source that's gone
+    /// shown as the one ForPoll uses instead, the first registered.
+    /// </summary>
+    public static (string SourceName, IReadOnlyList<string> Order) Usable(
+        string? sourceName, string? order, IReadOnlyList<string> registered)
+    {
+        string? Known(string? name) =>
+            registered.FirstOrDefault(r => string.Equals(r, name?.Trim(), StringComparison.OrdinalIgnoreCase));
+        var usableOrder = ParseOrder(order).Select(Known).OfType<string>().ToList();
+        return (Known(sourceName) ?? registered.FirstOrDefault() ?? sourceName ?? "", usableOrder);
+    }
+
     // The sources to try this poll, in order. `poll` counts polls, so Rotate can turn.
     // Names no longer registered are skipped; if nothing usable is left, the first
     // registered source is used so syncing never stops on a bad setting.

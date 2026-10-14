@@ -59,7 +59,6 @@ public sealed class CompetitionSources(
     {
         "BBC Sport" => "BbcSport",
         "ESPN" => "Espn",
-        "Fox Sports" => "FoxSports",
         var name => name,
     };
 }

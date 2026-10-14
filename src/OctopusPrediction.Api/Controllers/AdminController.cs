@@ -264,11 +264,14 @@ public class AdminController(
             settings.RegistrationClosed, sourceProblems, playersWithNotifications));
     }
 
-    private ScraperSettingsDto ToDto(ScraperSettings s) =>
-        new(s.Enabled, s.PollIntervalSeconds, s.Competition, s.SourceName, _sourceNames,
-            SourceModes.Normalize(s.SourceMode) ?? SourceModes.Single, SourcePlan.ParseOrder(s.SourceOrder), _roundSources,
+    private ScraperSettingsDto ToDto(ScraperSettings s)
+    {
+        var (sourceName, order) = SourcePlan.Usable(s.SourceName, s.SourceOrder, _sourceNames);
+        return new(s.Enabled, s.PollIntervalSeconds, s.Competition, sourceName, _sourceNames,
+            SourceModes.Normalize(s.SourceMode) ?? SourceModes.Single, order, _roundSources,
             s.PredictionsLocked, s.RegistrationClosed,
             s.ReminderEnabled, ReminderSchedule.ParseHours(s.ReminderOffsetsHours),
             new PredictionRulesDto(s.AllowPartialPredictions, s.PredictionsFinal, s.LockWeekAtFirstKickoff,
                 s.AllowLatePredictions));
+    }
 }

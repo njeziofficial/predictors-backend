@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.LiveScores;
 using PuppeteerSharp;
 
 namespace OctopusPrediction.Api.Services.Scraping;
@@ -82,7 +83,12 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
                 const isScheduled = classes.includes('event__match--scheduled');
                 const isLive = classes.includes('event__match--live');
                 const liveStage = isLive ? el.querySelector('.event__stage')?.textContent?.trim() ?? null : null;
+                // "10.10. 13:00", or with a note after the kickoff when the match was called off
+                // ("10.10. 13:00Abn", "Postp."). The note is passed on as the stage.
                 const stageTime = el.querySelector('[class*="event__stageTime"]')?.textContent?.trim() ?? null;
+                const split = stageTime?.match(/^(.*\d{1,2}:\d{2})\s*(.*)$/);
+                const time = split ? split[1].trim() : (/\d/.test(stageTime ?? '') ? stageTime : null);
+                const note = split ? (split[2].trim() || null) : (stageTime && !/\d/.test(stageTime) ? stageTime : null);
 
                 results.push({
                     id: el.id,
@@ -90,10 +96,10 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
                     away,
                     scoreHome: el.querySelector('[class*="event__score--home"]')?.textContent?.trim() ?? null,
                     scoreAway: el.querySelector('[class*="event__score--away"]')?.textContent?.trim() ?? null,
-                    stage: liveStage,
+                    stage: isLive ? liveStage : note,
                     isScheduled,
                     isLive,
-                    time: stageTime,
+                    time,
                     round: currentRound
                 });
             });
@@ -118,7 +124,7 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
             return [];
         }
 
-        var matches = JsonSerializer.Deserialize<ScrapedMatchDto[]>(json, ScrapingJson.Options) ?? [];
+        var matches = KeepCalledOffNotes(JsonSerializer.Deserialize<ScrapedMatchDto[]>(json, ScrapingJson.Options) ?? []);
         foreach (var m in matches.Where(m => m.Id is not null && m.Round is not null))
             _roundById[m.Id!] = m.Round!;
 
@@ -131,6 +137,19 @@ internal sealed class FlashscoreSource(ILogger<FlashscoreSource> logger, IOption
             // The main page's results are still good; rows without a round just wait for next time.
             logger.LogWarning(ex, "[Flashscore] Couldn't look up missing rounds");
         }
+        return matches;
+    }
+
+    /// <summary>
+    /// A row that isn't live passes on the note after its kickoff only when it says the match was
+    /// called off ("Abn", "Postp.", "Canc."), which MapStatus then honours over the row's
+    /// "finished" look. Any other note ("AET" on a finished knockout match) is dropped, so those
+    /// rows read exactly as before.
+    /// </summary>
+    internal static ScrapedMatchDto[] KeepCalledOffNotes(ScrapedMatchDto[] matches)
+    {
+        foreach (var m in matches.Where(m => m.IsLive != true && MatchReading.CalledOff(m.Stage) is null))
+            m.Stage = null;
         return matches;
     }
 

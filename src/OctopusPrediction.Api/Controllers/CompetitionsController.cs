@@ -69,8 +69,9 @@ public class CompetitionsController(AppDbContext db, AppCache cache, Competition
         return Ok(rows.Select(c =>
         {
             var plan = Competitions.SourcePlanOf(c);
-            return new CompetitionScrapingDto(c.Id, c.Name, c.Enabled, plan.SourceMode, plan.SourceName,
-                SourcePlan.ParseOrder(plan.SourceOrder), sources.NamesFor(c.Id));
+            var available = sources.NamesFor(c.Id);
+            var (sourceName, order) = SourcePlan.Usable(plan.SourceName, plan.SourceOrder, available);
+            return new CompetitionScrapingDto(c.Id, c.Name, c.Enabled, plan.SourceMode, sourceName, order, available);
         }));
     }
 
