@@ -41,8 +41,9 @@ public class CompetitionSyncTests : IDisposable
     [Fact]
     public async Task UnknownRound_IsSkippedWithAWarning_OncePerRoundName()
     {
-        // Unique, as the warned-about names last the whole test run.
-        var round = $"Mystery stage {Guid.NewGuid():N}";
+        // Unique, as the warned-about names last the whole test run. Letters only: a digit in it
+        // would be read as the matchday ("…a3" is Matchday 3).
+        var round = $"Mystery stage {string.Concat(Guid.NewGuid().ToString("N").Select(c => char.IsDigit(c) ? (char)('g' + c - '0') : c))}";
         var kickoff = new DateTime(2027, 2, 17, 20, 0, 0, DateTimeKind.Utc);
 
         await Sync(Ucl, Scheduled("Arsenal", "Inter", round, kickoff), Scheduled("PSG", "Napoli", round, kickoff));

@@ -2,5 +2,6 @@ namespace OctopusPrediction.Api.Services;
 
 public interface IReminderMessageSender
 {
-    Task SendReminderAsync(string toPhoneNumber, string weekName, DateTime kickoffUtc, CancellationToken ct = default);
+    // False when nothing was sent because the channel isn't configured.
+    Task<bool> SendReminderAsync(string toPhoneNumber, string weekName, DateTime kickoffUtc, CancellationToken ct = default);
 }

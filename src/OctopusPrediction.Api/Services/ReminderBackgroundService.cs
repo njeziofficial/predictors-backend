@@ -4,9 +4,10 @@ using OctopusPrediction.Api.Entities;
 
 namespace OctopusPrediction.Api.Services;
 
-// Checks, on a timer, whether any match week has crossed its admin-configured
-// "remind N hours before kickoff" threshold and hasn't been reminded yet, and if so
-// messages every non-admin, non-disabled user with a phone number on file.
+// Checks, on a timer, whether a prediction reminder is due for any week (by default 3 days and
+// again 2 days before its first match; see ReminderSchedule), and if so reminds every active
+// player who hasn't predicted all of the week's matches yet: by push notification, and by
+// WhatsApp/SMS too when Twilio is configured.
 internal class ReminderBackgroundService(
     IServiceScopeFactory scopeFactory,
     ILogger<ReminderBackgroundService> logger)
@@ -42,56 +43,45 @@ internal class ReminderBackgroundService(
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var sender = scope.ServiceProvider.GetRequiredService<IReminderMessageSender>();
+        var push = scope.ServiceProvider.GetRequiredService<PushSender>();
+        var sms = scope.ServiceProvider.GetRequiredService<IReminderMessageSender>();
 
         var settings = await db.ScraperSettings.FindAsync([1], ct);
         if (settings is null || !settings.ReminderEnabled) return;
 
+        var hours = ReminderSchedule.ParseHours(settings.ReminderOffsetsHours);
         var now = DateTime.UtcNow;
+        var horizon = now.AddHours(hours.Max());
 
-        // A competition switched off gets no reminders; its weeks are left unmarked, so one
-        // still ahead when it's switched back on is reminded about then.
+        // A competition switched off gets no reminders. Only weeks with a match still to come
+        // within reach of the earliest reminder can have one due.
         var disabled = await Competitions.DisabledIdsAsync(db, ct);
         var candidateWeeks = await db.MatchWeeks
             .Include(w => w.Fixtures)
-            .Where(w => w.ReminderSentAt == null && !disabled.Contains(w.CompetitionId))
+            .Where(w => !disabled.Contains(w.CompetitionId)
+                && w.Fixtures.Any(f => f.Status == FixtureStatus.PreMatch && f.Kickoff > now && f.Kickoff <= horizon))
             .ToListAsync(ct);
 
         foreach (var week in candidateWeeks)
         {
-            var firstKickoff = week.Fixtures
-                .Where(f => f.Status == FixtureStatus.PreMatch)
-                .Select(f => (DateTime?)f.Kickoff)
-                .Min();
+            if (ReminderSchedule.FirstKickoff(week.Fixtures) is not { } firstKickoff) continue;
+            if (ReminderSchedule.Due(firstKickoff, week.ReminderSentAt, hours, now) is not { } hoursBefore) continue;
 
-            // No upcoming fixtures to remind about (empty week, or everything already
-            // started/ended) — nothing to send, and nothing to mark either, in case fixtures
-            // get added to this week later.
-            if (firstKickoff is null) continue;
+            var recipients = await ReminderSchedule.PlayersStillToPredictAsync(db, week, ct);
+            var message = new PushMessage(
+                Title: $"{ReminderSchedule.WeekLabel(week)} predictions",
+                Body: $"{week.Competition} kicks off {ReminderSchedule.TimeUntil(firstKickoff, now)} and you haven't finished your predictions.",
+                Url: "/predict",
+                Tag: $"reminder-{week.Id}");
+            // Kept by the push service until the phone is next online, but not past kickoff.
+            var pushed = await push.SendAsync([.. recipients.Select(u => u.Id)], message, firstKickoff - now, ct);
 
-            var sendAt = firstKickoff.Value.AddHours(-settings.ReminderHoursBeforeFirstGame);
-            if (now < sendAt) continue;
-
-            // Past the window entirely (e.g. the service was down when it should've fired) —
-            // mark it sent without messaging anyone rather than send a stale/late reminder.
-            if (now >= firstKickoff.Value)
-            {
-                week.ReminderSentAt = now;
-                await db.SaveChangesAsync(ct);
-                continue;
-            }
-
-            var recipients = await db.Users
-                .Where(u => u.Role == UserRole.User && !u.IsDisabled && u.PhoneNumber != null && u.PhoneNumber != "")
-                .ToListAsync(ct);
-
-            var sent = 0;
-            foreach (var user in recipients)
+            var texted = 0;
+            foreach (var user in recipients.Where(u => !string.IsNullOrWhiteSpace(u.PhoneNumber)))
             {
                 try
                 {
-                    await sender.SendReminderAsync(user.PhoneNumber!, week.Name, firstKickoff.Value, ct);
-                    sent++;
+                    if (await sms.SendReminderAsync(user.PhoneNumber!, week.Name, firstKickoff, ct)) texted++;
                 }
                 catch (Exception ex)
                 {
@@ -102,8 +92,8 @@ internal class ReminderBackgroundService(
             week.ReminderSentAt = now;
             await db.SaveChangesAsync(ct);
             logger.LogInformation(
-                "[Reminders] Sent {Sent}/{Total} reminders for {Week} (kickoff {Kickoff:u})",
-                sent, recipients.Count, week.Name, firstKickoff.Value);
+                "[Reminders] {Before} reminder for {Week} (kickoff {Kickoff:u}): {Count} players still to predict, {Pushed} by push, {Texted} by message",
+                ReminderSchedule.Duration(hoursBefore), week.Name, firstKickoff, recipients.Count, pushed, texted);
         }
     }
 }

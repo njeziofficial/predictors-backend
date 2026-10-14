@@ -19,6 +19,10 @@ public class User
     public bool MustResetPassword { get; set; } = false;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastLoginAt { get; set; }
+    // Which push notifications the player wants, on every device they've turned them on in:
+    // prediction reminders, and notifications the admins send (AdminNotificationsController).
+    public bool NotifyReminders { get; set; } = true;
+    public bool NotifyAnnouncements { get; set; } = true;
     public ICollection<Prediction> Predictions { get; set; } = [];
     public ICollection<PreviousPoints> PreviousPoints { get; set; } = [];
 }

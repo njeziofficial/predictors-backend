@@ -14,6 +14,7 @@ public record ScraperSettingsDto(
     bool PredictionsLocked,
     bool RegistrationClosed,
     bool ReminderEnabled,
-    int ReminderHoursBeforeFirstGame,
+    // Hours before each week's first match a reminder goes out (72 = 3 days), earliest first.
+    IReadOnlyList<int> ReminderOffsetsHours,
     PredictionRulesDto PredictionRules
 );

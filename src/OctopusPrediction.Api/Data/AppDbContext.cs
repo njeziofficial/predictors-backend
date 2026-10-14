@@ -21,6 +21,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ChatMessage> ChatMessages => Set<ChatMessage>();
     public DbSet<MatchUpdate> MatchUpdates => Set<MatchUpdate>();
     public DbSet<Competition> Competitions => Set<Competition>();
+    public DbSet<PushSubscription> PushSubscriptions => Set<PushSubscription>();
+    public DbSet<PushKeys> PushKeys => Set<PushKeys>();
+    public DbSet<PushBroadcast> PushBroadcasts => Set<PushBroadcast>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -90,6 +93,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             s.Property(x => x.SourceName).HasMaxLength(50);
             s.Property(x => x.SourceMode).HasMaxLength(20);
             s.Property(x => x.SourceOrder).HasMaxLength(500);
+            s.Property(x => x.ReminderOffsetsHours).HasMaxLength(100);
         });
 
         mb.Entity<MatchUpdate>(u =>
@@ -208,6 +212,40 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
               .WithMany()
               .HasForeignKey(x => x.SenderId)
               .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<PushSubscription>(s =>
+        {
+            s.HasKey(x => x.Id);
+            s.Property(x => x.Endpoint).HasMaxLength(1000);
+            s.Property(x => x.P256dh).HasMaxLength(200);
+            s.Property(x => x.Auth).HasMaxLength(100);
+            s.HasIndex(x => x.Endpoint).IsUnique();
+            s.HasIndex(x => x.UserId);
+            s.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<PushBroadcast>(b =>
+        {
+            b.HasKey(x => x.Id);
+            b.Property(x => x.Title).HasMaxLength(100);
+            b.Property(x => x.Body).HasMaxLength(300);
+            b.Property(x => x.Url).HasMaxLength(200);
+            b.Property(x => x.Audience).HasMaxLength(20);
+            b.Property(x => x.WeekId).HasMaxLength(150);
+            b.Property(x => x.SentByName).HasMaxLength(200);
+            b.HasIndex(x => x.CreatedAt);
+        });
+
+        mb.Entity<PushKeys>(k =>
+        {
+            k.HasKey(x => x.Id);
+            k.Property(x => x.Id).ValueGeneratedNever();
+            k.Property(x => x.PublicKey).HasMaxLength(200);
+            k.Property(x => x.PrivateKey).HasMaxLength(200);
         });
     }
 }

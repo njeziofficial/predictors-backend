@@ -55,16 +55,25 @@ public static class MatchWindows
         var settings = await db.ScraperSettings.AsNoTracking().FirstOrDefaultAsync(ct);
         if (settings?.ReminderEnabled == true)
         {
+            var hours = ReminderSchedule.ParseHours(settings.ReminderOffsetsHours);
             var disabled = await Competitions.DisabledIdsAsync(db, ct);
-            var firstKickoffs = await db.MatchWeeks.AsNoTracking()
-                .Where(w => w.ReminderSentAt == null && !disabled.Contains(w.CompetitionId))
-                .Select(w => w.Fixtures.Where(f => f.Status == FixtureStatus.PreMatch).Min(f => (DateTime?)f.Kickoff))
+            var weeks = await db.MatchWeeks.AsNoTracking()
+                .Where(w => !disabled.Contains(w.CompetitionId) && w.Fixtures.Any(f => f.Status == FixtureStatus.PreMatch && f.Kickoff > now))
+                .Select(w => new
+                {
+                    w.ReminderSentAt,
+                    // As ReminderSchedule.FirstKickoff, in SQL.
+                    FirstKickoff = w.Fixtures
+                        .Where(f => f.Status != FixtureStatus.Postponed && f.Status != FixtureStatus.Cancelled)
+                        .Min(f => (DateTime?)f.Kickoff),
+                })
                 .ToListAsync(ct);
-            foreach (var kickoff in firstKickoffs.OfType<DateTime>().Where(k => k > now))
+            foreach (var week in weeks)
             {
-                var sendAt = kickoff.AddHours(-settings.ReminderHoursBeforeFirstGame);
-                if (sendAt + TimeSpan.FromMinutes(20) > now && sendAt < now + Lookahead)
-                    windows.Add(new TimeWindow(sendAt - TimeSpan.FromMinutes(5), sendAt + TimeSpan.FromMinutes(20)));
+                if (week.FirstKickoff is not { } kickoff || kickoff <= now) continue;
+                foreach (var sendAt in ReminderSchedule.PendingTimes(kickoff, week.ReminderSentAt, hours))
+                    if (sendAt + TimeSpan.FromMinutes(20) > now && sendAt < now + Lookahead)
+                        windows.Add(new TimeWindow(sendAt - TimeSpan.FromMinutes(5), sendAt + TimeSpan.FromMinutes(20)));
             }
         }
 

@@ -142,9 +142,11 @@ builder.Services.AddScoped<FixtureSync>();
 builder.Services.AddHostedService<MatchUpdateProcessor>();
 builder.Services.AddHostedService<MatchUpdateCleanupService>();
 
-// ── Prediction Reminders (Twilio) ────────────────────────────────────────────
+// ── Prediction Reminders (push notifications, plus Twilio when configured) ───
 builder.Services.Configure<TwilioSettings>(builder.Configuration.GetSection("Twilio"));
 builder.Services.AddSingleton<IReminderMessageSender, TwilioReminderMessageSender>();
+builder.Services.AddSingleton<PushKeyProvider>();
+builder.Services.AddScoped<PushSender>();
 builder.Services.AddHostedService<ReminderBackgroundService>();
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
@@ -421,6 +423,58 @@ try
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"Competitions\" ADD COLUMN IF NOT EXISTS \"SourceOrder\" character varying(500) NULL;");
         await Competitions.SeedAsync(db);
+
+        // Push notifications, reminders at chosen times, players' notification choices and the
+        // admins' sent notifications. Same SQL as db/supabase/2026-10-14-push-reminders.sql.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"ReminderOffsetsHours\" character varying(100) NOT NULL DEFAULT '72,48,3';");
+        // A days-only column from before reminders could be hours; never released.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" DROP COLUMN IF EXISTS \"ReminderDaysBeforeFirstGame\";");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"NotifyReminders\" boolean NOT NULL DEFAULT true;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"NotifyAnnouncements\" boolean NOT NULL DEFAULT true;");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PushBroadcasts" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "Title" character varying(100) NOT NULL,
+                "Body" character varying(300) NOT NULL,
+                "Url" character varying(200) NOT NULL,
+                "Audience" character varying(20) NOT NULL,
+                "WeekId" character varying(150) NULL,
+                "Important" boolean NOT NULL,
+                "Targeted" integer NOT NULL,
+                "Reached" integer NOT NULL,
+                "SentByUserId" uuid NULL,
+                "SentByName" character varying(200) NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_PushBroadcasts_CreatedAt\" ON \"PushBroadcasts\" (\"CreatedAt\");");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PushSubscriptions" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "Endpoint" character varying(1000) NOT NULL,
+                "P256dh" character varying(200) NOT NULL,
+                "Auth" character varying(100) NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PushSubscriptions_Endpoint\" ON \"PushSubscriptions\" (\"Endpoint\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_PushSubscriptions_UserId\" ON \"PushSubscriptions\" (\"UserId\");");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PushKeys" (
+                "Id" integer NOT NULL PRIMARY KEY,
+                "PublicKey" character varying(200) NOT NULL,
+                "PrivateKey" character varying(200) NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL
+            );
+            """);
 
         var seedLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         await DbSeeder.SeedAdminUserAsync(db, builder.Configuration, seedLogger);

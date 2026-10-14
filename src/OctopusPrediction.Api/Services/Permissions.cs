@@ -35,6 +35,7 @@ public static class Permissions
     public const string PredictionRulesManage = "predictions.rules";
     public const string CompetitionsManage = "competitions.manage";
     public const string MessagesBroadcast = "messages.broadcast";
+    public const string NotificationsSend = "notifications.send";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
     [
@@ -72,6 +73,8 @@ public static class Permissions
             "Open a competition (like the Champions League) to players, or close it. A closed one is hidden, can't be predicted and isn't scraped.", false),
         new(MessagesBroadcast, "Messages", "Send announcements",
             "Message every player, or a chosen group, at once. Players can reply in their chat with you.", true),
+        new(NotificationsSend, "Messages", "Send push notifications",
+            "Send a notification to players' phones: everyone, players yet to predict a week, or chosen players. Players who turned admin notifications off don't get it.", false),
     ];
 
     public static bool IsKnown(string key) => All.Any(p => p.Key == key);

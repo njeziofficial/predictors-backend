@@ -31,8 +31,10 @@ public class ScraperSettings
     // System-user-only kill switch: when false, AuditLogger.Log is a no-op for everyone —
     // see AuditLogSettings, which caches this in memory so every call site isn't a DB hit.
     public bool AuditLogEnabled { get; set; } = true;
-    // Off by default: nothing actually sends a reminder yet (no messaging provider is wired
-    // up), so this stays inert until that's built — enabling it just records intent.
+    // Prediction reminders (ReminderBackgroundService), sent as push notifications and, when
+    // Twilio is configured, WhatsApp/SMS. Both are the system user's alone (AdminController.SetReminders).
     public bool ReminderEnabled { get; set; } = false;
-    public int ReminderHoursBeforeFirstGame { get; set; } = 24;
+    // Comma-separated hours before each week's first match to send a reminder (72 = 3 days): one
+    // reminder per entry, each only to players who haven't finished predicting. See ReminderSchedule.
+    public string ReminderOffsetsHours { get; set; } = Services.ReminderSchedule.DefaultHoursText;
 }

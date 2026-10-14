@@ -30,7 +30,10 @@ public sealed class CacheInvalidationInterceptor(AppCache cache, LiveUpdateNotif
     private static readonly Dictionary<Type, HashSet<string>> IgnoredColumns = new()
     {
         [typeof(Fixture)] = [nameof(Fixture.UpdatedAt)],
-        [typeof(User)] = [nameof(User.LastLoginAt), nameof(User.PasswordHash), nameof(User.MustResetPassword)],
+        // Stamped by each prediction reminder; nothing players see shows it.
+        [typeof(MatchWeek)] = [nameof(MatchWeek.ReminderSentAt)],
+        [typeof(User)] = [nameof(User.LastLoginAt), nameof(User.PasswordHash), nameof(User.MustResetPassword),
+            nameof(User.NotifyReminders), nameof(User.NotifyAnnouncements)],
     };
 
     private readonly ConditionalWeakTable<DbContext, HashSet<CacheRegion>> _pending = new();

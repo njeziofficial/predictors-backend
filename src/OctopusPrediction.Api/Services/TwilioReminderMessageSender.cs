@@ -26,10 +26,10 @@ public class TwilioReminderMessageSender : IReminderMessageSender
             _logger.LogWarning("[Twilio] AccountSid/AuthToken not configured — reminders will be skipped");
     }
 
-    public async Task SendReminderAsync(string toPhoneNumber, string weekName, DateTime kickoffUtc, CancellationToken ct = default)
+    public async Task<bool> SendReminderAsync(string toPhoneNumber, string weekName, DateTime kickoffUtc, CancellationToken ct = default)
     {
         if (!_configured)
-            return;
+            return false;
 
         var useWhatsApp = string.Equals(_settings.Channel, "whatsapp", StringComparison.OrdinalIgnoreCase);
         var from = useWhatsApp ? _settings.WhatsAppFromNumber : _settings.SmsFromNumber;
@@ -38,7 +38,7 @@ public class TwilioReminderMessageSender : IReminderMessageSender
         {
             _logger.LogWarning(
                 "[Twilio] {Channel} sender number not configured — skipping reminder to {To}", _settings.Channel, toPhoneNumber);
-            return;
+            return false;
         }
 
         var normalized = NormalizePhone(toPhoneNumber);
@@ -51,6 +51,7 @@ public class TwilioReminderMessageSender : IReminderMessageSender
             from: new PhoneNumber(from),
             to: new PhoneNumber(to)
         );
+        return true;
     }
 
     private static string NormalizePhone(string raw)

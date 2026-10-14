@@ -48,8 +48,40 @@ public class AdminController(
         settings.Enabled = request.Enabled;
         settings.PollIntervalSeconds = request.PollIntervalSeconds;
         settings.Competition = request.Competition;
-        settings.ReminderEnabled = request.ReminderEnabled;
-        settings.ReminderHoursBeforeFirstGame = request.ReminderHoursBeforeFirstGame;
+        await db.SaveChangesAsync();
+        return Ok(ToDto(settings));
+    }
+
+    // Prediction reminders reach every player's phone, so whether they go out and when stays
+    // with the system user.
+    [HttpPut("reminders")]
+    [SystemUserOnly]
+    public async Task<IActionResult> SetReminders(SetRemindersRequest request)
+    {
+        if (ReminderSchedule.Validate(request.HoursBeforeFirstGame) is { } problem)
+            return BadRequest(new { message = problem });
+
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        var changes = new List<(string Field, string Previous, string New)>
+        {
+            ("Prediction reminders", settings.ReminderEnabled ? "On" : "Off", request.Enabled ? "On" : "Off"),
+            ("Reminder times before first match",
+                ReminderSchedule.Describe(ReminderSchedule.ParseHours(settings.ReminderOffsetsHours)),
+                ReminderSchedule.Describe(request.HoursBeforeFirstGame)),
+        }.Where(c => c.Previous != c.New).ToList();
+
+        settings.ReminderEnabled = request.Enabled;
+        settings.ReminderOffsetsHours = ReminderSchedule.FormatHours(request.HoursBeforeFirstGame);
+
+        if (changes.Count > 0)
+        {
+            var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+            var actor = await db.Users.FirstOrDefaultAsync(u => u.Id == currentUserId);
+            foreach (var (field, previous, value) in changes)
+                AuditLogger.Log(db, subject: null, actor: actor, action: "RemindersChanged",
+                    field: field, previousValue: previous, newValue: value);
+        }
+
         await db.SaveChangesAsync();
         return Ok(ToDto(settings));
     }
@@ -223,15 +255,20 @@ public class AdminController(
         var sourceProblems = guard.Snapshot()
             .Select(h => new SourceHealthDto(h.Name, h.Failures, h.CoolingUntil > DateTime.UtcNow ? h.CoolingUntil : null, h.LastProblem))
             .ToList();
+        var playersWithNotifications = await db.PushSubscriptions
+            .Where(s => !s.User.IsSystemUser && !s.User.IsDisabled)
+            .Select(s => s.UserId)
+            .Distinct()
+            .CountAsync();
         return Ok(new AdminStatusDto(lastScrapedAt, settings.Enabled, remindersConfigured, settings.PredictionsLocked,
-            settings.RegistrationClosed, sourceProblems));
+            settings.RegistrationClosed, sourceProblems, playersWithNotifications));
     }
 
     private ScraperSettingsDto ToDto(ScraperSettings s) =>
         new(s.Enabled, s.PollIntervalSeconds, s.Competition, s.SourceName, _sourceNames,
             SourceModes.Normalize(s.SourceMode) ?? SourceModes.Single, SourcePlan.ParseOrder(s.SourceOrder), _roundSources,
             s.PredictionsLocked, s.RegistrationClosed,
-            s.ReminderEnabled, s.ReminderHoursBeforeFirstGame,
+            s.ReminderEnabled, ReminderSchedule.ParseHours(s.ReminderOffsetsHours),
             new PredictionRulesDto(s.AllowPartialPredictions, s.PredictionsFinal, s.LockWeekAtFirstKickoff,
                 s.AllowLatePredictions));
 }
