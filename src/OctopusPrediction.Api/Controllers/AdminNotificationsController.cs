@@ -6,16 +6,18 @@ using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Dtos.Push;
 using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.Email;
 
 namespace OctopusPrediction.Api.Controllers;
 
 // The admin Notifications page: push notifications written by an admin, sent to everyone,
-// players yet to predict a week, or chosen players, with a history of what was sent.
+// players yet to predict a week, or chosen players, with a history of what was sent. Optionally
+// also by email to those push can't reach (EmailSender).
 [ApiController]
 [Route("api/admin/notifications")]
 [Authorize(Roles = "Admin")]
 [RequirePermission(Permissions.NotificationsSend)]
-public class AdminNotificationsController(AppDbContext db, PushSender sender) : ControllerBase
+public class AdminNotificationsController(AppDbContext db, PushSender sender, EmailSender email) : ControllerBase
 {
     // Sends an admin who isn't the system admin may make in an hour, so nobody floods phones.
     public const int HourlyLimit = 5;
@@ -41,9 +43,22 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender) : 
     {
         var (audience, problem) = await NotificationAudiences.ResolveAsync(db, request.Audience, request.WeekId, request.UserIds);
         if (audience is null) return BadRequest(new { message = problem });
-        var receiving = audience.Where(u => request.Important || u.NotifyAnnouncements).Select(u => u.Id).ToList();
-        var withSubscriptions = await sender.WithSubscriptionsAsync(receiving);
-        return Ok(new NotificationAudienceDto(audience.Count, withSubscriptions.Count));
+        var (byPush, byEmail) = await SplitAsync(audience, request.Important, request.Email);
+        int? emailsLeft = email.IsConfigured ? (await email.QuotaAsync()).Remaining(EmailKinds.Announcement) : null;
+        return Ok(new NotificationAudienceDto(audience.Count, byPush.Count, byEmail.Count, emailsLeft));
+    }
+
+    // Who gets it how: by push those with it on in a browser, and (when asked for and email is
+    // set up) by email those without it who kept emails on. Players who turned admin news off
+    // get neither, unless it's Important.
+    private async Task<(List<Guid> ByPush, List<User> ByEmail)> SplitAsync(List<User> audience, bool important, bool alsoEmail)
+    {
+        var receiving = audience.Where(u => important || u.NotifyAnnouncements).ToList();
+        var withPush = await sender.WithSubscriptionsAsync(receiving.Select(u => u.Id));
+        var byEmail = alsoEmail && email.IsConfigured
+            ? receiving.Where(u => !withPush.Contains(u.Id) && u.NotifyByEmail).ToList()
+            : [];
+        return ([.. withPush], byEmail);
     }
 
     [HttpPost]
@@ -74,12 +89,19 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender) : 
 
         var (audience, problem) = await NotificationAudiences.ResolveAsync(db, request.Audience, request.WeekId, request.UserIds);
         if (audience is null) return BadRequest(new { message = problem });
-        var receiving = audience.Where(u => request.Important || u.NotifyAnnouncements).Select(u => u.Id).ToList();
-        var targeted = (await sender.WithSubscriptionsAsync(receiving)).Count;
-        if (targeted == 0)
+        var (byPush, byEmail) = await SplitAsync(audience, request.Important, request.Email);
+        var targeted = byPush.Count;
+        if (targeted == 0 && byEmail.Count == 0)
             return BadRequest(new { message = request.Important
                 ? "Nobody in that audience has notifications turned on, so there's no one to send to."
                 : "Nobody in that audience will get it: they have notifications off, or turned off news from the admins." });
+        if (byEmail.Count > 0)
+        {
+            // All or nothing: half the players getting an email would be worse than none.
+            var left = (await email.QuotaAsync()).Remaining(EmailKinds.Announcement);
+            if (byEmail.Count > left)
+                return BadRequest(new { message = $"That needs {byEmail.Count} emails, but only {left} more can go out today (Resend's free tier). Send it without email, or tomorrow." });
+        }
 
         var broadcast = new PushBroadcast
         {
@@ -94,15 +116,21 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender) : 
             SentByName = me.Name,
         };
         // Each its own tag, so a second notification doesn't replace the first on the phone.
-        broadcast.Reached = await sender.SendAsync(receiving, new PushMessage(title, body, url, $"notice-{broadcast.Id:N}"), TimeToLive);
+        broadcast.Reached = await sender.SendAsync(byPush, new PushMessage(title, body, url, $"notice-{broadcast.Id:N}"), TimeToLive);
+        broadcast.Emailed = await email.SendManyAsync([.. byEmail.Select(u =>
+        {
+            var e = EmailTemplates.Announcement(u.Name, title, body, email.AppUrl + url, email.AppUrl);
+            return new EmailMessage(u.Email, e.Subject, e.Html, e.Text, EmailKinds.Announcement, u.Id);
+        })]);
 
         db.PushBroadcasts.Add(broadcast);
         AuditLogger.Log(db, subject: null, actor: me, action: "PushNotificationSent",
-            details: $"\"{title}\" to {broadcast.Audience} ({broadcast.Reached} of {targeted} reached)"
+            details: $"\"{title}\" to {broadcast.Audience} ({broadcast.Reached} of {targeted} reached"
+                     + (byEmail.Count > 0 ? $", {broadcast.Emailed} emailed" : "") + ")"
                      + (request.Important ? ", marked important" : ""));
         await db.SaveChangesAsync();
 
-        return Ok(new SendNotificationResultDto(targeted, broadcast.Reached));
+        return Ok(new SendNotificationResultDto(targeted, broadcast.Reached, broadcast.Emailed));
     }
 
     [HttpGet("history")]
@@ -112,7 +140,7 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender) : 
         var weekIds = sent.Select(b => b.WeekId).OfType<string>().Distinct().ToList();
         var weekNames = await db.MatchWeeks.Where(w => weekIds.Contains(w.Id)).ToDictionaryAsync(w => w.Id, w => w.Name);
         return Ok(sent.Select(b => new PushBroadcastDto(b.Id.ToString(), b.Title, b.Body, b.Url, b.Audience, b.WeekId,
-            b.WeekId is { } w ? weekNames.GetValueOrDefault(w) : null, b.Important, b.Targeted, b.Reached, b.SentByName, b.CreatedAt)));
+            b.WeekId is { } w ? weekNames.GetValueOrDefault(w) : null, b.Important, b.Targeted, b.Reached, b.Emailed, b.SentByName, b.CreatedAt)));
     }
 
     // A page in the app ("/predict", "/leaderboard?week=3"), never another site: "//evil.com" and

@@ -8,13 +8,14 @@ using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Dtos.Admin;
 using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services;
+using OctopusPrediction.Api.Services.Email;
 
 namespace OctopusPrediction.Api.Controllers;
 
 [ApiController]
 [Route("api/admin/users")]
 [Authorize(Roles = "Admin")]
-public class AdminUsersController(AppDbContext db) : ControllerBase
+public class AdminUsersController(AppDbContext db, EmailSender emailSender) : ControllerBase
 {
     private static readonly EmailAddressAttribute EmailValidator = new();
 
@@ -67,10 +68,17 @@ public class AdminUsersController(AppDbContext db) : ControllerBase
             details: $"Email: {user.Email}, Role: {role}");
         await db.SaveChangesAsync();
 
+        // A player is emailed a link to choose their own password (when email is set up). The
+        // temporary password still comes back, in case the email doesn't arrive. Admins can't
+        // change their own password, so they get none.
+        var welcomeEmailSent = role == UserRole.User
+            && await PasswordTokens.SendAsync(db, emailSender, user, PasswordTokenPurposes.Welcome);
+
         return CreatedAtAction(nameof(GetAll), null, new
         {
             user = ToDto(user),
-            temporaryPassword = generated ? password : null
+            temporaryPassword = generated ? password : null,
+            welcomeEmailSent
         });
     }
 

@@ -31,6 +31,8 @@ public class PushBroadcast
     // them at least one device actually took it on.
     public int Targeted { get; set; }
     public int Reached { get; set; }
+    // Players without push who were sent it by email instead.
+    public int Emailed { get; set; }
     public Guid? SentByUserId { get; set; }
     public string SentByName { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

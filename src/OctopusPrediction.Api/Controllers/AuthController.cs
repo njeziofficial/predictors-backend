@@ -1,9 +1,12 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Dtos.Auth;
+using OctopusPrediction.Api.Entities;
 using OctopusPrediction.Api.Services;
 using OctopusPrediction.Api.Services.Caching;
+using OctopusPrediction.Api.Services.Email;
 
 namespace OctopusPrediction.Api.Controllers;
 
@@ -116,6 +119,55 @@ public class AuthController(
             await auth.LogoutAsync(refreshToken);
 
         ClearRefreshCookie();
+        return NoContent();
+    }
+
+    // Emails a link to choose a new password. Always answers the same way, whether or not the
+    // email has an account, so the form can't be used to find out who plays. Players only:
+    // admins can't change their own password, so theirs stays with the system admin.
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword(ForgotPasswordRequest request, [FromServices] EmailSender email)
+    {
+        if (!email.IsConfigured)
+            return StatusCode(503, new { message = "Password emails aren't set up yet. Ask an admin to reset your password." });
+        var answer = Ok(new { message = "If that email belongs to a player, a link to choose a new password is on its way. Check your spam folder too." });
+
+        var address = request.Email.Trim().ToLowerInvariant();
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Email == address);
+        if (user is null || user.IsDisabled || user.Role != UserRole.User) return answer;
+        if (!await PasswordTokens.CanSendResetAsync(db, user.Id)) return answer;
+
+        await PasswordTokens.SendAsync(db, email, user, PasswordTokenPurposes.Reset);
+        return answer;
+    }
+
+    // What the Set password page needs to know about a link before showing the form.
+    [HttpPost("password-token")]
+    public async Task<IActionResult> CheckPasswordToken(PasswordTokenRequest request)
+    {
+        var token = await PasswordTokens.FindValidAsync(db, request.Token);
+        return Ok(token is null
+            ? new PasswordTokenDto(false, null, null)
+            : new PasswordTokenDto(true, token.Purpose, token.User.Name));
+    }
+
+    // Chooses a password with a link from a Forgot password or welcome email. The link works
+    // once; every other session of the account is signed out.
+    [HttpPost("set-password")]
+    public async Task<IActionResult> SetPassword(SetPasswordRequest request)
+    {
+        var token = await PasswordTokens.FindValidAsync(db, request.Token);
+        if (token is null)
+            return BadRequest(new { message = "This link has expired or was already used. Ask for a new one from Forgot password." });
+
+        var user = token.User;
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword(request.NewPassword);
+        user.MustResetPassword = false;
+        token.UsedAt = DateTime.UtcNow;
+        AuditLogger.Log(db, subject: user, actor: user,
+            action: token.Purpose == PasswordTokenPurposes.Welcome ? "PasswordSetFromWelcomeEmail" : "PasswordResetByEmail");
+        await SessionRevoker.RevokeAllAsync(db, user.Id, "password_reset");
+        await db.SaveChangesAsync();
         return NoContent();
     }
 

@@ -8,6 +8,7 @@ using OctopusPrediction.Api.Hubs;
 using OctopusPrediction.Api.Middleware;
 using OctopusPrediction.Api.Services;
 using OctopusPrediction.Api.Services.Caching;
+using OctopusPrediction.Api.Services.Email;
 using OctopusPrediction.Api.Services.LiveScores;
 using OctopusPrediction.Api.Services.Monitoring;
 using OctopusPrediction.Api.Services.Scraping;
@@ -146,6 +147,20 @@ builder.Services.Configure<TwilioSettings>(builder.Configuration.GetSection("Twi
 builder.Services.AddSingleton<IReminderMessageSender, TwilioReminderMessageSender>();
 builder.Services.AddSingleton<PushKeyProvider>();
 builder.Services.AddScoped<PushSender>();
+
+// ── Email (Resend) ────────────────────────────────────────────────────────────
+// Password links, welcome emails, and reminders/announcements for players without push, through
+// Resend, Brevo or the Gmail API (all HTTPS: Render's free tier blocks SMTP). A provider is
+// available once its credentials are set (Email__Brevo__ApiKey etc. on Render); the system admin
+// picks which one sends on the Settings page.
+builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
+builder.Services.AddHttpClient<ResendEmailProvider>(c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient<BrevoEmailProvider>(c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddHttpClient<GmailEmailProvider>(c => c.Timeout = TimeSpan.FromSeconds(20));
+builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<ResendEmailProvider>());
+builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<BrevoEmailProvider>());
+builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<GmailEmailProvider>());
+builder.Services.AddScoped<EmailSender>();
 builder.Services.AddHostedService<ReminderBackgroundService>();
 
 // ── CORS ──────────────────────────────────────────────────────────────────────
@@ -452,6 +467,50 @@ try
             """);
         await db.Database.ExecuteSqlRawAsync(
             "CREATE INDEX IF NOT EXISTS \"IX_PushBroadcasts_CreatedAt\" ON \"PushBroadcasts\" (\"CreatedAt\");");
+
+        // Email through Resend. Same SQL as db/supabase/2026-10-15-email.sql.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"NotifyByEmail\" boolean NOT NULL DEFAULT true;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"PushBroadcasts\" ADD COLUMN IF NOT EXISTS \"Emailed\" integer NOT NULL DEFAULT 0;");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "PasswordTokens" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "TokenHash" character varying(64) NOT NULL,
+                "Purpose" character varying(20) NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "ExpiresAt" timestamp with time zone NOT NULL,
+                "UsedAt" timestamp with time zone NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_PasswordTokens_TokenHash\" ON \"PasswordTokens\" (\"TokenHash\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_PasswordTokens_UserId\" ON \"PasswordTokens\" (\"UserId\");");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "EmailLogs" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NULL,
+                "To" character varying(256) NOT NULL,
+                "Kind" character varying(20) NOT NULL,
+                "Subject" character varying(200) NOT NULL,
+                "Sent" boolean NOT NULL,
+                "Error" character varying(500) NULL,
+                "CreatedAt" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_EmailLogs_CreatedAt\" ON \"EmailLogs\" (\"CreatedAt\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"EmailLogs\" ADD COLUMN IF NOT EXISTS \"Provider\" character varying(20) NULL;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"EmailProvider\" character varying(20) NOT NULL DEFAULT 'auto';");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"EmailSenderName\" character varying(100) NULL;");
+        foreach (var column in new[] { "EmailResendFrom", "EmailBrevoSender", "EmailGmailSender" })
+            await db.Database.ExecuteSqlRawAsync(
+                $"ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"{column}\" character varying(256) NULL;");
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "PushSubscriptions" (
                 "Id" uuid NOT NULL PRIMARY KEY,

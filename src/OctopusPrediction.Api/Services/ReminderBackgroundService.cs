@@ -1,13 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using OctopusPrediction.Api.Data;
 using OctopusPrediction.Api.Entities;
+using OctopusPrediction.Api.Services.Email;
 
 namespace OctopusPrediction.Api.Services;
 
 // Checks, on a timer, whether a prediction reminder is due for any week (by default 3 days and
 // again 2 days before its first match; see ReminderSchedule), and if so reminds every active
-// player who hasn't predicted all of the week's matches yet: by push notification, and by
-// WhatsApp/SMS too when Twilio is configured.
+// player who hasn't predicted all of the week's matches yet: by push notification, by email for
+// those with push on in no browser (EmailSender), and by WhatsApp/SMS too when Twilio is configured.
 internal class ReminderBackgroundService(
     IServiceScopeFactory scopeFactory,
     ILogger<ReminderBackgroundService> logger)
@@ -45,6 +46,7 @@ internal class ReminderBackgroundService(
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var push = scope.ServiceProvider.GetRequiredService<PushSender>();
         var sms = scope.ServiceProvider.GetRequiredService<IReminderMessageSender>();
+        var email = scope.ServiceProvider.GetRequiredService<EmailSender>();
 
         var settings = await db.ScraperSettings.FindAsync([1], ct);
         if (settings is null || !settings.ReminderEnabled) return;
@@ -76,6 +78,24 @@ internal class ReminderBackgroundService(
             // Kept by the push service until the phone is next online, but not past kickoff.
             var pushed = await push.SendAsync([.. recipients.Select(u => u.Id)], message, firstKickoff - now, ct);
 
+            // Players push can't reach (on in none of their browsers) get it by email, unless
+            // they turned emails off.
+            var emailed = 0;
+            if (email.IsConfigured)
+            {
+                var withPush = await push.WithSubscriptionsAsync(recipients.Select(u => u.Id), ct);
+                var timeUntil = ReminderSchedule.TimeUntil(firstKickoff, now);
+                var emails = recipients
+                    .Where(u => u.NotifyByEmail && !withPush.Contains(u.Id))
+                    .Select(u =>
+                    {
+                        var e = EmailTemplates.Reminder(u.Name, ReminderSchedule.WeekLabel(week), week.Competition, timeUntil, email.AppUrl);
+                        return new EmailMessage(u.Email, e.Subject, e.Html, e.Text, EmailKinds.Reminder, u.Id);
+                    })
+                    .ToList();
+                emailed = await email.SendManyAsync(emails, ct);
+            }
+
             var texted = 0;
             foreach (var user in recipients.Where(u => !string.IsNullOrWhiteSpace(u.PhoneNumber)))
             {
@@ -92,8 +112,8 @@ internal class ReminderBackgroundService(
             week.ReminderSentAt = now;
             await db.SaveChangesAsync(ct);
             logger.LogInformation(
-                "[Reminders] {Before} reminder for {Week} (kickoff {Kickoff:u}): {Count} players still to predict, {Pushed} by push, {Texted} by message",
-                ReminderSchedule.Duration(hoursBefore), week.Name, firstKickoff, recipients.Count, pushed, texted);
+                "[Reminders] {Before} reminder for {Week} (kickoff {Kickoff:u}): {Count} players still to predict, {Pushed} by push, {Emailed} by email, {Texted} by message",
+                ReminderSchedule.Duration(hoursBefore), week.Name, firstKickoff, recipients.Count, pushed, emailed, texted);
         }
     }
 }

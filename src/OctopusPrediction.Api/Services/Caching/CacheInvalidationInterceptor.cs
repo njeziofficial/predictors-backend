@@ -33,7 +33,7 @@ public sealed class CacheInvalidationInterceptor(AppCache cache, LiveUpdateNotif
         // Stamped by each prediction reminder; nothing players see shows it.
         [typeof(MatchWeek)] = [nameof(MatchWeek.ReminderSentAt)],
         [typeof(User)] = [nameof(User.LastLoginAt), nameof(User.PasswordHash), nameof(User.MustResetPassword),
-            nameof(User.NotifyReminders), nameof(User.NotifyAnnouncements)],
+            nameof(User.NotifyReminders), nameof(User.NotifyAnnouncements), nameof(User.NotifyByEmail)],
     };
 
     private readonly ConditionalWeakTable<DbContext, HashSet<CacheRegion>> _pending = new();

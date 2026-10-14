@@ -14,5 +14,7 @@ public record PushPublicKeyDto(string PublicKey);
 // Reached is how many of the user's browsers took the test notification.
 public record PushTestResultDto(int Reached);
 
-// Which push notifications the player wants (on every device they've turned them on in).
-public record NotificationPreferencesDto(bool Reminders, bool Announcements);
+// Which notifications the player wants (on every device they've turned them on in), and whether
+// to get them by email when push is on in none. Email defaults to on for an older client that
+// doesn't send it.
+public record NotificationPreferencesDto(bool Reminders, bool Announcements, bool Email = true);

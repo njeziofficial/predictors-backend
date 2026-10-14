@@ -24,6 +24,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PushSubscription> PushSubscriptions => Set<PushSubscription>();
     public DbSet<PushKeys> PushKeys => Set<PushKeys>();
     public DbSet<PushBroadcast> PushBroadcasts => Set<PushBroadcast>();
+    public DbSet<PasswordToken> PasswordTokens => Set<PasswordToken>();
+    public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -94,6 +96,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             s.Property(x => x.SourceMode).HasMaxLength(20);
             s.Property(x => x.SourceOrder).HasMaxLength(500);
             s.Property(x => x.ReminderOffsetsHours).HasMaxLength(100);
+            s.Property(x => x.EmailProvider).HasMaxLength(20);
+            s.Property(x => x.EmailSenderName).HasMaxLength(100);
+            s.Property(x => x.EmailResendFrom).HasMaxLength(256);
+            s.Property(x => x.EmailBrevoSender).HasMaxLength(256);
+            s.Property(x => x.EmailGmailSender).HasMaxLength(256);
         });
 
         mb.Entity<MatchUpdate>(u =>
@@ -238,6 +245,30 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             b.Property(x => x.WeekId).HasMaxLength(150);
             b.Property(x => x.SentByName).HasMaxLength(200);
             b.HasIndex(x => x.CreatedAt);
+        });
+
+        mb.Entity<PasswordToken>(t =>
+        {
+            t.HasKey(x => x.Id);
+            t.Property(x => x.TokenHash).HasMaxLength(64);
+            t.Property(x => x.Purpose).HasMaxLength(20);
+            t.HasIndex(x => x.TokenHash).IsUnique();
+            t.HasIndex(x => x.UserId);
+            t.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<EmailLog>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Provider).HasMaxLength(20);
+            e.Property(x => x.To).HasMaxLength(256);
+            e.Property(x => x.Kind).HasMaxLength(20);
+            e.Property(x => x.Subject).HasMaxLength(200);
+            e.Property(x => x.Error).HasMaxLength(500);
+            e.HasIndex(x => x.CreatedAt);
         });
 
         mb.Entity<PushKeys>(k =>

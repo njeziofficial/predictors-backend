@@ -23,6 +23,9 @@ public class User
     // prediction reminders, and notifications the admins send (AdminNotificationsController).
     public bool NotifyReminders { get; set; } = true;
     public bool NotifyAnnouncements { get; set; } = true;
+    // Those same reminders and announcements by email, for a player with push notifications on
+    // in no browser at all (EmailSender; Resend's free tier allows 100 emails a day).
+    public bool NotifyByEmail { get; set; } = true;
     public ICollection<Prediction> Predictions { get; set; } = [];
     public ICollection<PreviousPoints> PreviousPoints { get; set; } = [];
 }

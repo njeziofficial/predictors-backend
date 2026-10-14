@@ -37,4 +37,14 @@ public class ScraperSettings
     // Comma-separated hours before each week's first match to send a reminder (72 = 3 days): one
     // reminder per entry, each only to players who haven't finished predicting. See ReminderSchedule.
     public string ReminderOffsetsHours { get; set; } = Services.ReminderSchedule.DefaultHoursText;
+    // Which email provider sends ("Resend", "Brevo", "Gmail"), or "auto" for the first one set up.
+    // The system user's choice (AdminEmailController); credentials stay in config.
+    public string EmailProvider { get; set; } = Services.Email.EmailProviderNames.Auto;
+    // Who emails come from, set on the admin page; null falls back to the sender in config. The
+    // name is shared; each provider has its own address, since each only sends from addresses it
+    // has verified (Brevo: a verified sender; Gmail: the signed-in account; Resend: its domain).
+    public string? EmailSenderName { get; set; }
+    public string? EmailResendFrom { get; set; }
+    public string? EmailBrevoSender { get; set; }
+    public string? EmailGmailSender { get; set; }
 }
