@@ -242,6 +242,35 @@ public class AdminController(
         return Ok(new AuditLogSettingsDto(settings.AuditLogEnabled));
     }
 
+    public record PasskeySettingsDto(bool RemoveOnPasswordReset);
+
+    // Whether a password reset also removes the account's passkeys (fingerprint/face sign-in).
+    // A security choice for the whole app, so it's the system user's.
+    [HttpGet("passkey-settings")]
+    [SystemUserOnly]
+    public async Task<IActionResult> GetPasskeySettings()
+    {
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        return Ok(new PasskeySettingsDto(settings.RemovePasskeysOnPasswordReset));
+    }
+
+    [HttpPut("passkey-settings")]
+    [SystemUserOnly]
+    public async Task<IActionResult> SetPasskeySettings(PasskeySettingsDto request)
+    {
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        if (settings.RemovePasskeysOnPasswordReset != request.RemoveOnPasswordReset)
+        {
+            var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+            var actor = await db.Users.FirstOrDefaultAsync(u => u.Id == currentUserId);
+            AuditLogger.Log(db, subject: null, actor: actor, action: "SettingChanged", field: "RemovePasskeysOnPasswordReset",
+                previousValue: settings.RemovePasskeysOnPasswordReset ? "On" : "Off", newValue: request.RemoveOnPasswordReset ? "On" : "Off");
+        }
+        settings.RemovePasskeysOnPasswordReset = request.RemoveOnPasswordReset;
+        await db.SaveChangesAsync();
+        return Ok(new PasskeySettingsDto(settings.RemovePasskeysOnPasswordReset));
+    }
+
     [HttpGet("status")]
     public async Task<IActionResult> GetStatus()
     {

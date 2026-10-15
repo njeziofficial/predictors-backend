@@ -241,6 +241,8 @@ public class AdminUsersController(AppDbContext db, EmailSender emailSender) : Co
         AuditLogger.Log(db, subject: user, actor: actor, action: "PasswordReset");
         // Whoever was logged in with the old password gets signed out everywhere.
         await SessionRevoker.RevokeAllAsync(db, user.Id, "password_reset");
+        // And their fingerprint/face sign-in, if the system admin chose that.
+        await PasskeyService.RemoveOnPasswordResetAsync(db, user.Id);
 
         await db.SaveChangesAsync();
         return Ok(new { temporaryPassword });

@@ -26,6 +26,8 @@ public record RefreshResult(AuthSession? Session, RefreshFailureReason? FailureR
 public interface IAuthService
 {
     Task<LoginResult> LoginAsync(LoginRequest request);
+    // Signs in a user already proven to be who they say (e.g. by a passkey); method goes in the audit log.
+    Task<LoginResult> SignInAsync(Entities.User user, string? method = null);
     Task<AuthSession?> RegisterAsync(RegisterRequest request);
     Task<RefreshResult> RefreshAsync(string refreshToken);
     Task LogoutAsync(string refreshToken);

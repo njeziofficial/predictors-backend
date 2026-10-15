@@ -27,6 +27,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PasswordToken> PasswordTokens => Set<PasswordToken>();
     public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
     public DbSet<UserNotification> UserNotifications => Set<UserNotification>();
+    public DbSet<Passkey> Passkeys => Set<Passkey>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -293,6 +294,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             k.Property(x => x.Id).ValueGeneratedNever();
             k.Property(x => x.PublicKey).HasMaxLength(200);
             k.Property(x => x.PrivateKey).HasMaxLength(200);
+        });
+
+        mb.Entity<Passkey>(p =>
+        {
+            p.HasKey(x => x.Id);
+            p.Property(x => x.CredentialId).HasMaxLength(1024);
+            p.Property(x => x.PublicKey).HasMaxLength(2048);
+            p.Property(x => x.Name).HasMaxLength(60);
+            p.Property(x => x.Transports).HasMaxLength(100);
+            p.HasIndex(x => x.CredentialId).IsUnique();
+            p.HasIndex(x => x.UserId);
+            p.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

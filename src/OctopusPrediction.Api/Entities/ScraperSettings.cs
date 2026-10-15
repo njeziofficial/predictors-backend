@@ -50,4 +50,9 @@ public class ScraperSettings
     // When the system admin last cleared the failed-email notice on the Settings page: only
     // failures after it are shown. The email log keeps them all.
     public DateTime? EmailErrorsClearedAt { get; set; }
+
+    // Whether resetting a password (by an admin, or with a Forgot password email) also removes the
+    // account's passkeys, so only the new password signs in until fingerprint/face is set up
+    // again. Off by default, as passkeys don't depend on the password. The system admin's call.
+    public bool RemovePasskeysOnPasswordReset { get; set; } = false;
 }

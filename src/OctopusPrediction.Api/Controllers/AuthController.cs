@@ -80,6 +80,36 @@ public class AuthController(
         return StatusCode(201, session.Response);
     }
 
+    public record PasskeyLoginRequest(
+        [property: System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(64)] string FlowId,
+        [property: System.ComponentModel.DataAnnotations.Required] Fido2NetLib.AuthenticatorAssertionRawResponse Response);
+
+    // Signing in with fingerprint or face, step 1: what the phone should sign.
+    [HttpPost("passkey/options")]
+    public IActionResult PasskeyOptions([FromServices] PasskeyService passkeys)
+    {
+        var ceremony = passkeys.StartLogin();
+        return Ok(new { flowId = ceremony.FlowId, options = ceremony.Options });
+    }
+
+    // Step 2: the phone's signature, which signs its owner in like a password would.
+    [HttpPost("passkey")]
+    public async Task<IActionResult> PasskeyLogin(PasskeyLoginRequest request, [FromServices] PasskeyService passkeys, CancellationToken ct)
+    {
+        var (user, problem) = await passkeys.FinishLoginAsync(request.FlowId, request.Response, ct);
+        if (user is null) return Unauthorized(new { message = problem });
+
+        var result = await auth.SignInAsync(user, "passkey");
+        if (result.FailureReason == LoginFailureReason.AccountDisabled)
+            return StatusCode(403, new
+            {
+                code = "account_disabled",
+                message = "Your account has been disabled. Please contact an admin."
+            });
+        SetRefreshCookie(result.Session!);
+        return Ok(result.Session!.Response);
+    }
+
     // Exchanges the refresh cookie for a new access token (and a rotated cookie).
     [HttpPost("refresh")]
     public async Task<IActionResult> Refresh()
@@ -167,6 +197,8 @@ public class AuthController(
         AuditLogger.Log(db, subject: user, actor: user,
             action: token.Purpose == PasswordTokenPurposes.Welcome ? "PasswordSetFromWelcomeEmail" : "PasswordResetByEmail");
         await SessionRevoker.RevokeAllAsync(db, user.Id, "password_reset");
+        // And their fingerprint/face sign-in, if the system admin chose that.
+        await PasskeyService.RemoveOnPasswordResetAsync(db, user.Id);
         await db.SaveChangesAsync();
         return NoContent();
     }

@@ -1,3 +1,4 @@
+using Fido2NetLib;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -112,6 +113,9 @@ builder.Services.AddSingleton<ChatPushNotifier>();
 
 // ── App Services ──────────────────────────────────────────────────────────────
 builder.Services.AddScoped<IAuthService, AuthService>();
+// Signing in with fingerprint or face (passkeys).
+builder.Services.AddSingleton<IFido2>(new Fido2NetLib.Fido2(PasskeySetup.Configuration(builder.Configuration, builder.Environment)));
+builder.Services.AddScoped<PasskeyService>();
 builder.Services.AddScoped<IScoringService, ScoringService>();
 builder.Services.AddScoped<PointsReconciler>();
 builder.Services.AddScoped<WeekMarking>();
@@ -267,6 +271,8 @@ try
             "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"MustResetPassword\" boolean NOT NULL DEFAULT false;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AuditLogEnabled\" boolean NOT NULL DEFAULT true;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"RemovePasskeysOnPasswordReset\" boolean NOT NULL DEFAULT false;");
         // Prediction rules. Same SQL as db/supabase/2026-10-09-prediction-rules.sql.
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AllowPartialPredictions\" boolean NOT NULL DEFAULT false;");
@@ -517,6 +523,25 @@ try
             "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"NotifyMessages\" boolean NOT NULL DEFAULT true;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"ShowMessagePreview\" boolean NOT NULL DEFAULT true;");
+
+        // Passkeys: signing in with fingerprint or face. Same SQL as db/supabase/2026-10-15-passkeys.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "Passkeys" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "CredentialId" bytea NOT NULL,
+                "PublicKey" bytea NOT NULL,
+                "SignCount" bigint NOT NULL,
+                "Name" character varying(60) NOT NULL,
+                "Transports" character varying(100) NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "LastUsedAt" timestamp with time zone NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Passkeys_CredentialId\" ON \"Passkeys\" (\"CredentialId\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_Passkeys_UserId\" ON \"Passkeys\" (\"UserId\");");
 
         // Players' in-app notifications. Same SQL as db/supabase/2026-10-15-inbox.sql.
         await db.Database.ExecuteSqlRawAsync("""

@@ -51,11 +51,16 @@ public class AuthService(AppDbContext db, IConfiguration config) : IAuthService
         if (user is null)
             return new LoginResult(null, LoginFailureReason.InvalidCredentials);
 
+        return await SignInAsync(user);
+    }
+
+    public async Task<LoginResult> SignInAsync(User user, string? method = null)
+    {
         if (user.IsDisabled)
             return new LoginResult(null, LoginFailureReason.AccountDisabled);
 
         user.LastLoginAt = DateTime.UtcNow;
-        AuditLogger.Log(db, subject: user, actor: user, action: "Login");
+        AuditLogger.Log(db, subject: user, actor: user, action: "Login", details: method is null ? null : $"With a {method}");
         var session = await StartSessionAsync(user);
         await db.SaveChangesAsync();
 
