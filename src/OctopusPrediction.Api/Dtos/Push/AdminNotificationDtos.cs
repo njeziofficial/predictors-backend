@@ -27,7 +27,8 @@ public record NotificationAudienceRequest(
 
 // WillReceive: by push. WillEmail: by email instead (when Email was asked for). EmailsLeftToday:
 // null when email isn't set up.
-public record NotificationAudienceDto(int InAudience, int WillReceive, int WillEmail, int? EmailsLeftToday);
+// InApp: players who'll see it in the app's notifications (everyone who didn't turn admin news off).
+public record NotificationAudienceDto(int InAudience, int WillReceive, int WillEmail, int? EmailsLeftToday, int InApp);
 
 public record SendNotificationResultDto(int Targeted, int Reached, int Emailed);
 

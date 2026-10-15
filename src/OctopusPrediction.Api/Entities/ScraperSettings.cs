@@ -47,4 +47,7 @@ public class ScraperSettings
     public string? EmailResendFrom { get; set; }
     public string? EmailBrevoSender { get; set; }
     public string? EmailGmailSender { get; set; }
+    // When the system admin last cleared the failed-email notice on the Settings page: only
+    // failures after it are shown. The email log keeps them all.
+    public DateTime? EmailErrorsClearedAt { get; set; }
 }

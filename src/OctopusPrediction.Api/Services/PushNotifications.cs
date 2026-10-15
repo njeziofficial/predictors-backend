@@ -11,6 +11,13 @@ using OctopusPrediction.Api.Entities;
 
 namespace OctopusPrediction.Api.Services;
 
+// Web Push's Urgency header (RFC 8030): how soon the push service delivers.
+public static class PushUrgency
+{
+    public const string Normal = "normal";
+    public const string High = "high";
+}
+
 // What a push notification shows. Url is where tapping it opens the app; a later notification
 // with the same Tag replaces the earlier one on the device instead of stacking under it.
 public record PushMessage(string Title, string Body, string Url, string? Tag = null);
@@ -171,9 +178,9 @@ public sealed class PushKeyProvider(IConfiguration config, IServiceScopeFactory 
 
 // Sends push notifications to every browser a user has turned them on in, and forgets the ones
 // the push service says are gone (the app was uninstalled or notifications switched off).
-public sealed class PushSender(AppDbContext db, PushKeyProvider keys, ILogger<PushSender> logger)
+// A typed HttpClient (Program.cs), so tests can hand it a fake push service.
+public sealed class PushSender(HttpClient http, AppDbContext db, PushKeyProvider keys, ILogger<PushSender> logger)
 {
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     // Push services an endpoint may point at. Endpoints come from browsers, but they're sent to us
@@ -193,8 +200,13 @@ public sealed class PushSender(AppDbContext db, PushKeyProvider keys, ILogger<Pu
         && uri.IsDefaultPort
         && PushHosts.Any(h => uri.Host == h || uri.Host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Sends to every subscription of these users; returns how many users it reached.</summary>
-    public async Task<int> SendAsync(IReadOnlyCollection<Guid> userIds, PushMessage message, TimeSpan timeToLive, CancellationToken ct = default)
+    /// <summary>
+    /// Sends to every subscription of these users; returns how many users it reached. Urgency
+    /// "high" has the push service deliver at once even to a sleeping phone (reminders, admin
+    /// notifications); "normal" lets it wait for the phone's next wake-up.
+    /// </summary>
+    public async Task<int> SendAsync(IReadOnlyCollection<Guid> userIds, PushMessage message, TimeSpan timeToLive,
+        CancellationToken ct = default, string urgency = PushUrgency.Normal)
     {
         if (userIds.Count == 0) return 0;
         var subscriptions = await db.PushSubscriptions.Where(s => userIds.Contains(s.UserId)).ToListAsync(ct);
@@ -220,9 +232,9 @@ public sealed class PushSender(AppDbContext db, PushKeyProvider keys, ILogger<Pu
                 request.Content.Headers.ContentEncoding.Add("aes128gcm");
                 request.Headers.TryAddWithoutValidation("Authorization", WebPushCrypto.VapidAuthorization(sub.Endpoint, vapid, DateTimeOffset.UtcNow));
                 request.Headers.Add("TTL", ttl.ToString());
-                request.Headers.Add("Urgency", "normal");
+                request.Headers.Add("Urgency", urgency);
 
-                using var response = await Http.SendAsync(request, token);
+                using var response = await http.SendAsync(request, token);
                 if (response.IsSuccessStatusCode)
                     reached.TryAdd(sub.UserId, 0);
                 else if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)

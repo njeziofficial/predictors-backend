@@ -146,7 +146,7 @@ builder.Services.AddHostedService<MatchUpdateCleanupService>();
 builder.Services.Configure<TwilioSettings>(builder.Configuration.GetSection("Twilio"));
 builder.Services.AddSingleton<IReminderMessageSender, TwilioReminderMessageSender>();
 builder.Services.AddSingleton<PushKeyProvider>();
-builder.Services.AddScoped<PushSender>();
+builder.Services.AddHttpClient<PushSender>(c => c.Timeout = TimeSpan.FromSeconds(15));
 
 // ── Email (Resend) ────────────────────────────────────────────────────────────
 // Password links, welcome emails, and reminders/announcements for players without push, through
@@ -508,6 +508,25 @@ try
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"EmailProvider\" character varying(20) NOT NULL DEFAULT 'auto';");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"EmailSenderName\" character varying(100) NULL;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"EmailErrorsClearedAt\" timestamp with time zone NULL;");
+        // Players' in-app notifications. Same SQL as db/supabase/2026-10-15-inbox.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "UserNotifications" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "Kind" character varying(20) NOT NULL,
+                "Title" character varying(100) NOT NULL,
+                "Body" character varying(300) NOT NULL,
+                "Url" character varying(200) NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "ReadAt" timestamp with time zone NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_UserNotifications_UserId_CreatedAt\" ON \"UserNotifications\" (\"UserId\", \"CreatedAt\");");
+        await db.Database.ExecuteSqlRawAsync(
+            "CREATE INDEX IF NOT EXISTS \"IX_UserNotifications_CreatedAt\" ON \"UserNotifications\" (\"CreatedAt\");");
         foreach (var column in new[] { "EmailResendFrom", "EmailBrevoSender", "EmailGmailSender" })
             await db.Database.ExecuteSqlRawAsync(
                 $"ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"{column}\" character varying(256) NULL;");

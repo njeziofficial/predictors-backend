@@ -26,6 +26,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<PushBroadcast> PushBroadcasts => Set<PushBroadcast>();
     public DbSet<PasswordToken> PasswordTokens => Set<PasswordToken>();
     public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
+    public DbSet<UserNotification> UserNotifications => Set<UserNotification>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -269,6 +270,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Subject).HasMaxLength(200);
             e.Property(x => x.Error).HasMaxLength(500);
             e.HasIndex(x => x.CreatedAt);
+        });
+
+        mb.Entity<UserNotification>(n =>
+        {
+            n.HasKey(x => x.Id);
+            n.Property(x => x.Kind).HasMaxLength(20);
+            n.Property(x => x.Title).HasMaxLength(100);
+            n.Property(x => x.Body).HasMaxLength(300);
+            n.Property(x => x.Url).HasMaxLength(200);
+            n.HasIndex(x => new { x.UserId, x.CreatedAt });
+            n.HasIndex(x => x.CreatedAt);
+            n.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
         });
 
         mb.Entity<PushKeys>(k =>

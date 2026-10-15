@@ -44,8 +44,9 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender, Em
         var (audience, problem) = await NotificationAudiences.ResolveAsync(db, request.Audience, request.WeekId, request.UserIds);
         if (audience is null) return BadRequest(new { message = problem });
         var (byPush, byEmail) = await SplitAsync(audience, request.Important, request.Email);
+        var inApp = audience.Count(u => request.Important || u.NotifyAnnouncements);
         int? emailsLeft = email.IsConfigured ? (await email.QuotaAsync()).Remaining(EmailKinds.Announcement) : null;
-        return Ok(new NotificationAudienceDto(audience.Count, byPush.Count, byEmail.Count, emailsLeft));
+        return Ok(new NotificationAudienceDto(audience.Count, byPush.Count, byEmail.Count, emailsLeft, inApp));
     }
 
     // Who gets it how: by push those with it on in a browser, and (when asked for and email is
@@ -91,10 +92,11 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender, Em
         if (audience is null) return BadRequest(new { message = problem });
         var (byPush, byEmail) = await SplitAsync(audience, request.Important, request.Email);
         var targeted = byPush.Count;
-        if (targeted == 0 && byEmail.Count == 0)
-            return BadRequest(new { message = request.Important
-                ? "Nobody in that audience has notifications turned on, so there's no one to send to."
-                : "Nobody in that audience will get it: they have notifications off, or turned off news from the admins." });
+        // Everyone who hasn't turned admin news off (or all, when Important) sees it in the app,
+        // so it can go out even if nobody has push or email.
+        var inApp = audience.Where(u => request.Important || u.NotifyAnnouncements).Select(u => u.Id).ToList();
+        if (inApp.Count == 0)
+            return BadRequest(new { message = "Everyone in that audience turned off news from the admins." });
         if (byEmail.Count > 0)
         {
             // All or nothing: half the players getting an email would be worse than none.
@@ -116,7 +118,9 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender, Em
             SentByName = me.Name,
         };
         // Each its own tag, so a second notification doesn't replace the first on the phone.
-        broadcast.Reached = await sender.SendAsync(byPush, new PushMessage(title, body, url, $"notice-{broadcast.Id:N}"), TimeToLive);
+        broadcast.Reached = await sender.SendAsync(byPush, new PushMessage(title, body, url, $"notice-{broadcast.Id:N}"), TimeToLive,
+            urgency: PushUrgency.High);
+        NotificationInbox.Add(db, inApp, NotificationInbox.Announcement, title, body, url);
         broadcast.Emailed = await email.SendManyAsync([.. byEmail.Select(u =>
         {
             var e = EmailTemplates.Announcement(u.Name, title, body, email.AppUrl + url, email.AppUrl);

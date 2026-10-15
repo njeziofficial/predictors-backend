@@ -454,4 +454,27 @@ public class EmailTests : IDisposable
         var admin = EmailAdmin(Sender(Settings(resend: false, brevo: true)));
         Assert.IsType<BadRequestObjectResult>(await admin.SetSenders(new(name, null, brevo, gmail)));
     }
+
+    [Fact]
+    public async Task Clearing_the_failed_email_notice_hides_past_failures_but_a_new_one_shows()
+    {
+        _resend.Status = HttpStatusCode.Unauthorized;
+        var sender = Sender(Settings(resend: false, brevo: true));
+        var admin = EmailAdmin(sender);
+        Assert.False(await sender.SendAsync(Message(EmailKinds.Test)));
+
+        var status = (AdminEmailController.EmailStatusDto)((OkObjectResult)await admin.GetStatus()).Value!;
+        Assert.Equal(1, status.FailedToday);
+        Assert.StartsWith("Brevo: 401", status.LastError);
+
+        status = (AdminEmailController.EmailStatusDto)((OkObjectResult)await admin.ClearErrors()).Value!;
+        Assert.Equal((0, null), (status.FailedToday, status.LastError));
+        // The log keeps it.
+        Assert.Equal(1, await _db.EmailLogs.CountAsync(e => !e.Sent));
+
+        await Task.Delay(20);
+        Assert.False(await Sender(Settings(resend: false, brevo: true)).SendAsync(Message(EmailKinds.Test)));
+        status = (AdminEmailController.EmailStatusDto)((OkObjectResult)await admin.GetStatus()).Value!;
+        Assert.Equal(1, status.FailedToday);
+    }
 }

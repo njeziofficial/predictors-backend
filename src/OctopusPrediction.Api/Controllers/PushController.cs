@@ -63,10 +63,11 @@ public class PushController(AppDbContext db, PushKeyProvider keys, PushSender se
     [HttpPost("test")]
     public async Task<IActionResult> SendTest()
     {
-        var reached = await sender.SendAsync(
-            [CurrentUserId()],
-            new PushMessage("Notifications are on", "This device will get Octopus Prediction notifications.", "/predict", "test"),
-            TimeSpan.FromMinutes(10));
+        var message = new PushMessage("Notifications are on", "This device will get Octopus Prediction notifications.", "/predict", "test");
+        var reached = await sender.SendAsync([CurrentUserId()], message, TimeSpan.FromMinutes(10));
+        // In the app too, so the test shows how notifications appear there.
+        NotificationInbox.Add(db, [CurrentUserId()], NotificationInbox.Test, message.Title, message.Body, message.Url);
+        await db.SaveChangesAsync();
         return Ok(new PushTestResultDto(reached));
     }
 

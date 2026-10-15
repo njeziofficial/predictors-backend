@@ -132,6 +132,16 @@ public class AdminEmailController(
             : BadRequest(new { message = $"{provider.Name} didn't accept the test. The email status shows why." });
     }
 
+    // Hides the failures shown so far (once fixed, say); any later failure shows again.
+    [HttpPost("clear-errors")]
+    public async Task<IActionResult> ClearErrors()
+    {
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        settings.EmailErrorsClearedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        return Ok(await StatusAsync());
+    }
+
     private async Task<EmailStatusDto> StatusAsync()
     {
         var sender = email;
@@ -154,9 +164,12 @@ public class AdminEmailController(
                 quota.SentToday, p.DailyLimit, quota.SentThisMonth, p.MonthlyLimit));
         }
         var senderName = saved?.EmailSenderName ?? active?.ConfiguredSender?.Name ?? EmailSender.DefaultSenderName;
-        var today = DateTime.UtcNow.Date;
-        var failedToday = await db.EmailLogs.CountAsync(e => !e.Sent && e.CreatedAt >= today);
-        var lastError = await db.EmailLogs.Where(e => !e.Sent && e.Error != null)
+        // Failures since the start of the day, or since the admin last cleared them if later; a new
+        // one shows again. The log itself keeps them all.
+        var since = DateTime.UtcNow.Date;
+        if (saved?.EmailErrorsClearedAt is { } cleared && cleared > since) since = cleared;
+        var failedToday = await db.EmailLogs.CountAsync(e => !e.Sent && e.CreatedAt > since);
+        var lastError = await db.EmailLogs.Where(e => !e.Sent && e.Error != null && e.CreatedAt > since)
             .OrderByDescending(e => e.CreatedAt).Select(e => e.Provider + ": " + e.Error).FirstOrDefaultAsync();
         return new EmailStatusDto(sender.IsConfigured, choice, active?.Name, sender.AppUrl,
             (await sender.QuotaAsync(active)).DailyReserve, senderName, saved?.EmailSenderName,

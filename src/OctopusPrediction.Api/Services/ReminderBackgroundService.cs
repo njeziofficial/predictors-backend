@@ -36,6 +36,16 @@ internal class ReminderBackgroundService(
                 logger.LogError(ex, "[Reminders] Check cycle failed");
             }
 
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                await NotificationInbox.DeleteOldAsync(scope.ServiceProvider.GetRequiredService<AppDbContext>(), ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "[Reminders] Couldn't delete old in-app notifications");
+            }
+
             await Task.Delay(PollInterval, ct);
         }
     }
@@ -76,7 +86,9 @@ internal class ReminderBackgroundService(
                 Url: "/predict",
                 Tag: $"reminder-{week.Id}");
             // Kept by the push service until the phone is next online, but not past kickoff.
-            var pushed = await push.SendAsync([.. recipients.Select(u => u.Id)], message, firstKickoff - now, ct);
+            var pushed = await push.SendAsync([.. recipients.Select(u => u.Id)], message, firstKickoff - now, ct, PushUrgency.High);
+            // In the app too, for the player's next visit, whether or not the push arrived.
+            NotificationInbox.Add(db, recipients.Select(u => u.Id), NotificationInbox.Reminder, message.Title, message.Body, message.Url);
 
             // Players push can't reach (on in none of their browsers) get it by email, unless
             // they turned emails off.

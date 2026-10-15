@@ -33,3 +33,12 @@ CREATE INDEX IF NOT EXISTS "IX_EmailLogs_CreatedAt" ON "EmailLogs" ("CreatedAt")
 -- (Resend, Brevo, Gmail, or auto for the first set up).
 ALTER TABLE "EmailLogs" ADD COLUMN IF NOT EXISTS "Provider" character varying(20) NULL;
 ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "EmailProvider" character varying(20) NOT NULL DEFAULT 'auto';
+
+-- When the system admin last cleared the failed-email notice (only later failures show).
+ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "EmailErrorsClearedAt" timestamp with time zone NULL;
+
+-- Who emails come from, set on the Settings page (null: the sender in config).
+ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "EmailSenderName" character varying(100) NULL;
+ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "EmailResendFrom" character varying(256) NULL;
+ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "EmailBrevoSender" character varying(256) NULL;
+ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "EmailGmailSender" character varying(256) NULL;
