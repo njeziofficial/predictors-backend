@@ -19,7 +19,7 @@ namespace OctopusPrediction.Api.Controllers;
 [Route("api/chat")]
 [Authorize]
 public class ChatController(
-    AppDbContext db, AppCache cache, IHubContext<ChatHub, IChatClient> hub, PresenceTracker presence)
+    AppDbContext db, AppCache cache, IHubContext<ChatHub, IChatClient> hub, PresenceTracker presence, ChatPushNotifier pushes)
     : ControllerBase
 {
     // The inbox: conversations with at least one message, most recent first.
@@ -142,6 +142,9 @@ public class ChatController(
 
         var dto = ToDto(message, mine.User.Name);
         await hub.Clients.Users(participants.Select(p => p.UserId.ToString())).MessageReceived(dto);
+        // And to the phones of those who don't have the app in front.
+        pushes.Notify([.. participants.Where(p => p.UserId != me).Select(p => new ChatRecipient(p.UserId, id))],
+            mine.User.Name, body, announcement: false);
         return Ok(dto);
     }
 
@@ -277,6 +280,8 @@ public class ChatController(
 
         foreach (var (recipient, message) in sent)
             await hub.Clients.User(recipient.ToString()).MessageReceived(ToDto(message, sender.Name));
+        pushes.Notify([.. sent.Select(s => new ChatRecipient(s.Recipient, s.Message.ConversationId))],
+            sender.Name, body, announcement: true);
 
         return Ok(new BroadcastResultDto(recipients.Count));
     }

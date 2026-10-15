@@ -41,6 +41,7 @@ public class ChatHub(AppDbContext db, AppCache cache, PresenceTracker presence) 
             return;
         }
 
+        presence.Track(Context.ConnectionId, userId);
         if (presence.Connect(userId))
             await Clients.Others.PresenceChanged(userId.ToString(), true);
         await base.OnConnectedAsync();
@@ -49,6 +50,7 @@ public class ChatHub(AppDbContext db, AppCache cache, PresenceTracker presence) 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         var userId = CurrentUserId();
+        presence.Forget(Context.ConnectionId);
         if (presence.Disconnect(userId))
             await Clients.Others.PresenceChanged(userId.ToString(), false);
         await base.OnDisconnectedAsync(exception);
@@ -66,6 +68,10 @@ public class ChatHub(AppDbContext db, AppCache cache, PresenceTracker presence) 
         await Clients.Users(participants.Where(id => id != userId).Select(id => id.ToString()))
             .Typing(conversationId.ToString(), userId.ToString());
     }
+
+    // "The app is in front" (true) or "in the background" (false), sent when that changes. Chat
+    // messages are pushed to the phone only while it's in the background (ChatPushNotifier).
+    public void SetActive(bool active) => presence.SetActive(Context.ConnectionId, active);
 
     private Guid CurrentUserId() =>
         Guid.Parse(Context.User!.FindFirstValue(ClaimTypes.NameIdentifier)!);

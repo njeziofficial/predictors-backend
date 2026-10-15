@@ -26,6 +26,10 @@ public class User
     // Those same reminders and announcements by email, for a player with push notifications on
     // in no browser at all (EmailSender; Resend's free tier allows 100 emails a day).
     public bool NotifyByEmail { get; set; } = true;
+    // Chat messages and announcements pushed while the app isn't in front (ChatPushNotifier),
+    // and whether the notification shows the message itself or only who it's from.
+    public bool NotifyMessages { get; set; } = true;
+    public bool ShowMessagePreview { get; set; } = true;
     public ICollection<Prediction> Predictions { get; set; } = [];
     public ICollection<PreviousPoints> PreviousPoints { get; set; } = [];
 }

@@ -205,15 +205,26 @@ public sealed class PushSender(HttpClient http, AppDbContext db, PushKeyProvider
     /// "high" has the push service deliver at once even to a sleeping phone (reminders, admin
     /// notifications); "normal" lets it wait for the phone's next wake-up.
     /// </summary>
-    public async Task<int> SendAsync(IReadOnlyCollection<Guid> userIds, PushMessage message, TimeSpan timeToLive,
+    public Task<int> SendAsync(IReadOnlyCollection<Guid> userIds, PushMessage message, TimeSpan timeToLive,
+        CancellationToken ct = default, string urgency = PushUrgency.Normal) =>
+        SendEachAsync([.. userIds.Distinct().Select(id => (id, message))], timeToLive, ct, urgency);
+
+    /// <summary>
+    /// Sends each user their own message (a chat message links to each recipient's own copy of
+    /// the conversation); returns how many users it reached.
+    /// </summary>
+    public async Task<int> SendEachAsync(IReadOnlyList<(Guid UserId, PushMessage Message)> messages, TimeSpan timeToLive,
         CancellationToken ct = default, string urgency = PushUrgency.Normal)
     {
-        if (userIds.Count == 0) return 0;
+        if (messages.Count == 0) return 0;
+        var payloads = new Dictionary<Guid, byte[]>();
+        foreach (var (userId, message) in messages)
+            payloads[userId] = JsonSerializer.SerializeToUtf8Bytes(message, Json);
+        var userIds = payloads.Keys.ToList();
         var subscriptions = await db.PushSubscriptions.Where(s => userIds.Contains(s.UserId)).ToListAsync(ct);
         if (subscriptions.Count == 0) return 0;
 
         var vapid = await keys.GetAsync(ct);
-        var payload = JsonSerializer.SerializeToUtf8Bytes(message, Json);
         var ttl = Math.Max(0, (int)timeToLive.TotalSeconds);
         var reached = new ConcurrentDictionary<Guid, byte>();
         var gone = new ConcurrentBag<Entities.PushSubscription>();
@@ -226,7 +237,7 @@ public sealed class PushSender(HttpClient http, AppDbContext db, PushKeyProvider
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, sub.Endpoint)
                 {
-                    Content = new ByteArrayContent(WebPushCrypto.Encrypt(payload, sub.P256dh, sub.Auth)),
+                    Content = new ByteArrayContent(WebPushCrypto.Encrypt(payloads[sub.UserId], sub.P256dh, sub.Auth)),
                 };
                 request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                 request.Content.Headers.ContentEncoding.Add("aes128gcm");

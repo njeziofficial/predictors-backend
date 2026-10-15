@@ -77,7 +77,7 @@ public class PushController(AppDbContext db, PushKeyProvider keys, PushSender se
     {
         var userId = CurrentUserId();
         var prefs = await db.Users.Where(u => u.Id == userId)
-            .Select(u => new NotificationPreferencesDto(u.NotifyReminders, u.NotifyAnnouncements, u.NotifyByEmail))
+            .Select(u => new NotificationPreferencesDto(u.NotifyReminders, u.NotifyAnnouncements, u.NotifyByEmail, u.NotifyMessages, u.ShowMessagePreview))
             .FirstOrDefaultAsync();
         return prefs is null ? NotFound() : Ok(prefs);
     }
@@ -90,8 +90,11 @@ public class PushController(AppDbContext db, PushKeyProvider keys, PushSender se
         user.NotifyReminders = request.Reminders;
         user.NotifyAnnouncements = request.Announcements;
         user.NotifyByEmail = request.Email;
+        user.NotifyMessages = request.Messages;
+        user.ShowMessagePreview = request.MessagePreview;
         await db.SaveChangesAsync();
-        return Ok(new NotificationPreferencesDto(user.NotifyReminders, user.NotifyAnnouncements, user.NotifyByEmail));
+        return Ok(new NotificationPreferencesDto(user.NotifyReminders, user.NotifyAnnouncements, user.NotifyByEmail,
+            user.NotifyMessages, user.ShowMessagePreview));
     }
 
     private Guid CurrentUserId() => Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);

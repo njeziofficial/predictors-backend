@@ -107,6 +107,8 @@ builder.Services.AddSignalR(opts => opts.MaximumReceiveMessageSize = 16 * 1024)
     .AddJsonProtocol(opts =>
         opts.PayloadSerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase);
 builder.Services.AddSingleton<PresenceTracker>();
+// Chat messages to the phones of those who don't have the app in front.
+builder.Services.AddSingleton<ChatPushNotifier>();
 
 // ── App Services ──────────────────────────────────────────────────────────────
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -510,6 +512,12 @@ try
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"EmailSenderName\" character varying(100) NULL;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"EmailErrorsClearedAt\" timestamp with time zone NULL;");
+        // Chat message notifications. Same SQL as db/supabase/2026-10-15-chat-push.sql.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"NotifyMessages\" boolean NOT NULL DEFAULT true;");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"Users\" ADD COLUMN IF NOT EXISTS \"ShowMessagePreview\" boolean NOT NULL DEFAULT true;");
+
         // Players' in-app notifications. Same SQL as db/supabase/2026-10-15-inbox.sql.
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "UserNotifications" (
