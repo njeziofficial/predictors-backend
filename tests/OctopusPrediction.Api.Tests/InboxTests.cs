@@ -160,4 +160,77 @@ public class InboxTests : IDisposable
         Assert.IsType<OkObjectResult>(await admin.Send(new SendNotificationRequest("Fixture change", "Moved.", "/predict", "everyone", null, null, false)));
         Assert.Equal(["high"], service.Urgencies);
     }
+
+    [Fact]
+    public async Task The_inbox_pages_searches_and_filters_while_the_unread_count_stays_the_whole_inbox()
+    {
+        var pat = AddUser("pat");
+        var start = DateTime.UtcNow.AddHours(-1);
+        for (var i = 1; i <= 5; i++)
+            _db.UserNotifications.Add(new UserNotification
+            {
+                UserId = pat.Id, Kind = NotificationInbox.Announcement, Title = $"Notice {i}",
+                Body = i == 3 ? "Kick-off moved to Sunday." : "Nothing much.", CreatedAt = start.AddMinutes(i),
+                ReadAt = i == 1 ? DateTime.UtcNow : null,
+            });
+        await _db.SaveChangesAsync();
+        var controller = As(new NotificationsController(_db), pat.Id);
+
+        var page2 = (NotificationsController.InboxDto)((OkObjectResult)await controller.Get(page: 2, pageSize: 2)).Value!;
+        Assert.Equal(5, page2.Total);
+        Assert.Equal(4, page2.Unread);
+        Assert.Equal(["Notice 3", "Notice 2"], page2.Items.Select(i => i.Title));
+
+        var search = (NotificationsController.InboxDto)((OkObjectResult)await controller.Get(q: "SUNDAY")).Value!;
+        Assert.Equal("Notice 3", Assert.Single(search.Items).Title);
+        Assert.Equal(4, search.Unread);
+
+        var unread = (NotificationsController.InboxDto)((OkObjectResult)await controller.Get(unreadOnly: true)).Value!;
+        Assert.Equal(4, unread.Total);
+    }
+
+    [Fact]
+    public async Task Players_delete_their_own_notifications_only()
+    {
+        var pat = AddUser("pat");
+        var sam = AddUser("sam");
+        NotificationInbox.Add(_db, [pat.Id, sam.Id], NotificationInbox.Announcement, "Fixture change", "Moved.", "/");
+        NotificationInbox.Add(_db, [pat.Id], NotificationInbox.Reminder, "Week 9", "Predict.", "/predict");
+        NotificationInbox.Add(_db, [pat.Id], NotificationInbox.Test, "Test", "On.", "/");
+        await _db.SaveChangesAsync();
+        var patNotes = await _db.UserNotifications.Where(n => n.UserId == pat.Id).ToListAsync();
+        var samNote = await _db.UserNotifications.SingleAsync(n => n.UserId == sam.Id);
+        var controller = As(new NotificationsController(_db), pat.Id);
+
+        // Someone else's: not found, and left alone.
+        Assert.IsType<NotFoundResult>(await controller.Delete(samNote.Id));
+        Assert.IsType<NoContentResult>(await controller.Delete(patNotes.Single(n => n.Title == "Test").Id));
+
+        var many = (NotificationsController.DeletedDto)((OkObjectResult)await controller.DeleteMany(
+            new([patNotes.Single(n => n.Title == "Week 9").Id, samNote.Id]))).Value!;
+        Assert.Equal(1, many.Deleted);
+
+        patNotes.Single(n => n.Title == "Fixture change").ReadAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync();
+        var readOnes = (NotificationsController.DeletedDto)((OkObjectResult)await controller.DeleteRead()).Value!;
+        Assert.Equal(1, readOnes.Deleted);
+
+        Assert.Empty(await _db.UserNotifications.Where(n => n.UserId == pat.Id).ToListAsync());
+        Assert.True(await _db.UserNotifications.AnyAsync(n => n.Id == samNote.Id));
+    }
+
+    [Fact]
+    public async Task Sending_says_how_many_got_it_in_the_app()
+    {
+        var system = AddUser("system", admin: true, system: true);
+        AddUser("pat");
+        AddUser("sam");
+        var email = new EmailSender(_db, [], Options.Create(new EmailSettings()), NullLogger<EmailSender>.Instance);
+        var admin = As(new AdminNotificationsController(_db, Push(new FakePushService()), email), system.Id);
+
+        var result = (SendNotificationResultDto)((OkObjectResult)await admin.Send(
+            new SendNotificationRequest("Fixture change", "Moved.", "/predict", "everyone", null, null, false))).Value!;
+        Assert.Equal(0, result.Targeted);
+        Assert.Equal(2, result.InApp);
+    }
 }

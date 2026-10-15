@@ -99,18 +99,43 @@ public class AuthService(AppDbContext db, IConfiguration config) : IAuthService
 
         if (token.RevokedAt is not null)
         {
-            if (token.RevokedReason != "rotated")
+            if (token.RevokedReason is not ("rotated" or "superseded"))
                 return new RefreshResult(null, RefreshFailureReason.InvalidToken);
 
             var familyAlive = await db.RefreshTokens.AnyAsync(t =>
                 t.FamilyId == token.FamilyId && t.RevokedAt == null && t.ExpiresAt > now);
 
-            if (familyAlive && now - token.RevokedAt.Value <= RotationGracePeriod)
+            if (token.RevokedReason == "rotated" && familyAlive && now - token.RevokedAt.Value <= RotationGracePeriod)
             {
                 if (token.User.IsDisabled)
                     return new RefreshResult(null, RefreshFailureReason.AccountDisabled);
                 return new RefreshResult(
                     new AuthSession(GenerateAccessToken(token.User, token.FamilyId), null, token.ExpiresAt), null);
+            }
+
+            // The phone never got the answer to its last refresh (the app was closed or lost signal
+            // while the backend was waking): the replacement was issued but has never been used. Issue
+            // a fresh one instead of ending the session. The unused replacement is marked superseded,
+            // so if a copy of it ever turns up, that is still caught as reuse below.
+            var unused = token.RevokedReason == "rotated" && token.ReplacedByTokenId is { } nextId
+                ? await db.RefreshTokens.FirstOrDefaultAsync(t => t.Id == nextId)
+                : null;
+            if (unused is { RevokedAt: null } && unused.ExpiresAt > now)
+            {
+                if (token.User.IsDisabled)
+                {
+                    await RevokeFamilyAsync(token.FamilyId, "disabled");
+                    await db.SaveChangesAsync();
+                    return new RefreshResult(null, RefreshFailureReason.AccountDisabled);
+                }
+                var (freshRaw, fresh) = CreateRefreshToken(token.User, token.FamilyId);
+                unused.RevokedAt = now;
+                unused.RevokedReason = "superseded";
+                unused.ReplacedByTokenId = fresh.Id;
+                token.ReplacedByTokenId = fresh.Id;
+                await db.SaveChangesAsync();
+                return new RefreshResult(
+                    new AuthSession(GenerateAccessToken(token.User, token.FamilyId), freshRaw, fresh.ExpiresAt), null);
             }
 
             // A rotated token showing up again later means someone else has a copy of it —

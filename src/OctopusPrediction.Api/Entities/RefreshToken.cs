@@ -15,7 +15,8 @@ public class RefreshToken
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime ExpiresAt { get; set; }
     public DateTime? RevokedAt { get; set; }
-    // "rotated", "logout", "reuse_detected", "password_changed", "password_reset", "disabled"
+    // "rotated", "superseded" (issued but never received: see AuthService.RefreshAsync), "logout",
+    // "reuse_detected", "password_changed", "password_reset", "disabled"
     public string? RevokedReason { get; set; }
     public Guid? ReplacedByTokenId { get; set; }
 }

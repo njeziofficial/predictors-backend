@@ -30,7 +30,8 @@ public record NotificationAudienceRequest(
 // InApp: players who'll see it in the app's notifications (everyone who didn't turn admin news off).
 public record NotificationAudienceDto(int InAudience, int WillReceive, int WillEmail, int? EmailsLeftToday, int InApp);
 
-public record SendNotificationResultDto(int Targeted, int Reached, int Emailed);
+// Targeted: players with push on (Reached of them got it). InApp: everyone it went to in the app.
+public record SendNotificationResultDto(int Targeted, int Reached, int Emailed, int InApp);
 
 // A player for the "choose players" list.
 public record NotificationPlayerDto(

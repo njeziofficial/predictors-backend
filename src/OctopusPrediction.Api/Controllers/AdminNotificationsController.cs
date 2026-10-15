@@ -134,7 +134,7 @@ public class AdminNotificationsController(AppDbContext db, PushSender sender, Em
                      + (request.Important ? ", marked important" : ""));
         await db.SaveChangesAsync();
 
-        return Ok(new SendNotificationResultDto(targeted, broadcast.Reached, broadcast.Emailed));
+        return Ok(new SendNotificationResultDto(targeted, broadcast.Reached, broadcast.Emailed, inApp.Count));
     }
 
     [HttpGet("history")]
