@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Fido2NetLib;
 using Fido2NetLib.Objects;
@@ -47,7 +48,7 @@ public record PasskeyCeremony(string FlowId, JsonNode Options);
 /// passkeys on the device itself (platform authenticators: fingerprint, face, screen lock) and
 /// always with the user verified, so a passkey is as good as the password it stands in for.
 /// </summary>
-public class PasskeyService(AppDbContext db, IFido2 fido2, IMemoryCache cache)
+public class PasskeyService(AppDbContext db, IFido2 fido2, IMemoryCache cache, ILogger<PasskeyService>? logger = null)
 {
     public const int MaxPerUser = 10;
     public const int MaxName = 60;
@@ -124,9 +125,10 @@ public class PasskeyService(AppDbContext db, IFido2 fido2, IMemoryCache cache)
                     !await db.Passkeys.AnyAsync(p => p.CredentialId == args.CredentialId, token),
             }, ct);
         }
-        catch (Fido2VerificationException)
+        catch (Exception ex) when (ex is Fido2VerificationException or System.Formats.Cbor.CborContentException or ArgumentException or FormatException or InvalidOperationException)
         {
-            return (null, "Your device's answer couldn't be checked. Please try again.");
+            logger?.LogWarning("Passkey registration refused: {Reason}", ex.Message);
+            return (null, $"Your device's answer couldn't be checked ({ex.Message}). Please try again.");
         }
 
         var passkey = new Passkey
@@ -184,9 +186,10 @@ public class PasskeyService(AppDbContext db, IFido2 fido2, IMemoryCache cache)
                     Task.FromResult(args.UserHandle.AsSpan().SequenceEqual(passkey.UserId.ToByteArray())),
             }, ct);
         }
-        catch (Fido2VerificationException)
+        catch (Exception ex) when (ex is Fido2VerificationException or System.Formats.Cbor.CborContentException or ArgumentException or FormatException or InvalidOperationException)
         {
-            return (null, "Your device's answer couldn't be checked. Please try again.");
+            logger?.LogWarning("Passkey sign-in refused: {Reason}", ex.Message);
+            return (null, $"Your device's answer couldn't be checked ({ex.Message}). Please try again.");
         }
 
         passkey.SignCount = result.SignCount;
@@ -238,4 +241,22 @@ public class PasskeyService(AppDbContext db, IFido2 fido2, IMemoryCache cache)
     }
 
     private static string CacheKey(string flowId) => $"passkey-ceremony:{flowId}";
+
+    /// <summary>
+    /// The device's answer as the app posted it. Read here rather than by model binding, so an
+    /// answer in a shape the library doesn't expect says why instead of a bare 400.
+    /// </summary>
+    public static (T? Answer, string? Problem) ReadAnswer<T>(JsonElement json) where T : class
+    {
+        if (json.ValueKind != JsonValueKind.Object) return (null, "Your device didn't send an answer. Please try again.");
+        try
+        {
+            var answer = json.Deserialize<T>();
+            return answer is null ? (null, "Your device didn't send an answer. Please try again.") : (answer, null);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or FormatException or ArgumentException)
+        {
+            return (null, $"Your device's answer couldn't be read ({ex.Message}).");
+        }
+    }
 }

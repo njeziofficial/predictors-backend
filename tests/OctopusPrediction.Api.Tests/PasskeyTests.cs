@@ -157,7 +157,14 @@ public class PasskeyTests : IDisposable
     }
 
     // What ASP.NET does with the body the app posts.
-    private static T Bind<T>(string json) => JsonSerializer.Deserialize<T>(json, Web)!;
+    private static T Bind<T>(string json) where T : class
+    {
+        // As the controllers do: the posted body (web JSON), then PasskeyService.ReadAnswer.
+        var body = JsonSerializer.Deserialize<JsonElement>(json, Web);
+        var (answer, problem) = PasskeyService.ReadAnswer<T>(body);
+        Assert.True(answer is not null, problem);
+        return answer!;
+    }
 
     private async Task<FakeDevice> AddPasskey(string? name = "Pixel 8")
     {
@@ -180,6 +187,31 @@ public class PasskeyTests : IDisposable
         Assert.Equal("platform", options["authenticatorSelection"]!["authenticatorAttachment"]!.GetValue<string>());
         Assert.Equal("required", options["authenticatorSelection"]!["userVerification"]!.GetValue<string>());
         Assert.Equal("required", options["authenticatorSelection"]!["residentKey"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Answers_with_the_extras_Android_Chrome_adds_are_read()
+    {
+        var device = new FakeDevice();
+        var (ceremony, _) = await _passkeys.StartRegistrationAsync(_pat);
+        var answer = JsonNode.Parse(device.Create(ceremony!.Options))!;
+        answer["authenticatorAttachment"] = "platform";
+        answer["clientExtensionResults"] = JsonNode.Parse("""{"credProps":{"rk":true}}""");
+        answer["response"]!["publicKeyAlgorithm"] = -7;
+        answer["response"]!["transports"] = JsonNode.Parse("""["hybrid","internal"]""");
+
+        var (passkey, problem) = await _passkeys.FinishRegistrationAsync(_pat.Id, ceremony.FlowId, null,
+            Bind<AuthenticatorAttestationRawResponse>(answer.ToJsonString()));
+        Assert.True(passkey is not null, problem);
+    }
+
+    [Fact]
+    public void An_unreadable_answer_says_why()
+    {
+        var (answer, problem) = PasskeyService.ReadAnswer<AuthenticatorAttestationRawResponse>(
+            JsonSerializer.Deserialize<JsonElement>("""{"id":"x","rawId":"not base64url!!","type":"public-key","response":{}}"""));
+        Assert.Null(answer);
+        Assert.StartsWith("Your device's answer couldn't be read", problem);
     }
 
     [Fact]

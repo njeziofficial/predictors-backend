@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
+using System.Text.Json;
 using Fido2NetLib;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -19,7 +20,7 @@ public class PasskeysController(AppDbContext db, PasskeyService passkeys) : Cont
     public record FinishRegistrationRequest(
         [Required, MaxLength(64)] string FlowId,
         [MaxLength(100)] string? Name,
-        [Required] AuthenticatorAttestationRawResponse Response);
+        JsonElement Response);
 
     public record RenamePasskeyRequest([MaxLength(100)] string? Name);
 
@@ -41,7 +42,9 @@ public class PasskeysController(AppDbContext db, PasskeyService passkeys) : Cont
     [HttpPost("register")]
     public async Task<IActionResult> Register(FinishRegistrationRequest request, CancellationToken ct)
     {
-        var (passkey, problem) = await passkeys.FinishRegistrationAsync(CurrentUserId(), request.FlowId, request.Name, request.Response, ct);
+        var (answer, unreadable) = PasskeyService.ReadAnswer<AuthenticatorAttestationRawResponse>(request.Response);
+        if (answer is null) return BadRequest(new { message = unreadable });
+        var (passkey, problem) = await passkeys.FinishRegistrationAsync(CurrentUserId(), request.FlowId, request.Name, answer, ct);
         return passkey is null ? BadRequest(new { message = problem }) : Ok(passkey);
     }
 

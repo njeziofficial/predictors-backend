@@ -82,7 +82,7 @@ public class AuthController(
 
     public record PasskeyLoginRequest(
         [property: System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.MaxLength(64)] string FlowId,
-        [property: System.ComponentModel.DataAnnotations.Required] Fido2NetLib.AuthenticatorAssertionRawResponse Response);
+        System.Text.Json.JsonElement Response);
 
     // Signing in with fingerprint or face, step 1: what the phone should sign.
     [HttpPost("passkey/options")]
@@ -96,7 +96,9 @@ public class AuthController(
     [HttpPost("passkey")]
     public async Task<IActionResult> PasskeyLogin(PasskeyLoginRequest request, [FromServices] PasskeyService passkeys, CancellationToken ct)
     {
-        var (user, problem) = await passkeys.FinishLoginAsync(request.FlowId, request.Response, ct);
+        var (answer, unreadable) = PasskeyService.ReadAnswer<Fido2NetLib.AuthenticatorAssertionRawResponse>(request.Response);
+        if (answer is null) return BadRequest(new { message = unreadable });
+        var (user, problem) = await passkeys.FinishLoginAsync(request.FlowId, answer, ct);
         if (user is null) return Unauthorized(new { message = problem });
 
         var result = await auth.SignInAsync(user, "passkey");
