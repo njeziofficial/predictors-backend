@@ -130,7 +130,63 @@ public class AdminWalletController(AppDbContext db) : ControllerBase
         }
     }
 
-    // Cancels an entry with an opposite one. The original stays, marked as reversed.
+    // Takes a player's entry fee for the season back out of the pot: their payments are reversed,
+    // so the history shows both the payment and why it was undone. The system admin's call only.
+    [HttpPost("users/{userId:guid}/unpaid")]
+    [SystemUserOnly]
+    public async Task<IActionResult> MarkUnpaid(Guid userId, MarkUnpaidRequest request)
+    {
+        var reason = request.Reason.Trim();
+        if (reason.Length == 0) return BadRequest(new { message = "Say why they're being marked as unpaid." });
+
+        var (current, fee) = await WalletLedger.CurrentAsync(db);
+        var season = request.Season ?? current;
+        if (!WalletLedger.IsSeason(season)) return BadRequest(new { message = "A season looks like 2026/27." });
+
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId);
+        if (user is null) return NotFound(new { message = "Player not found." });
+
+        var actor = await CurrentUserAsync();
+        await Writes.WaitAsync();
+        try
+        {
+            // Every entry fee still standing: not itself a reversal, and not reversed yet.
+            var fees = await db.WalletEntries
+                .Where(e => e.UserId == userId && e.Season == season && e.Kind == WalletKinds.EntryFee && e.ReversesEntryId == null)
+                .ToListAsync();
+            var feeIds = fees.Select(e => e.Id).ToList();
+            var reversed = await db.WalletEntries
+                .Where(e => e.ReversesEntryId != null && feeIds.Contains(e.ReversesEntryId.Value))
+                .Select(e => e.ReversesEntryId!.Value)
+                .ToListAsync();
+            var standing = fees.Where(e => !reversed.Contains(e.Id)).ToList();
+            if (standing.Count == 0) return BadRequest(new { message = $"{user.Name} hasn't paid for {season}." });
+
+            var refund = standing.Sum(e => e.AmountKobo);
+            var totals = await WalletLedger.TotalsAsync(db, season);
+            var mine = totals.GetValueOrDefault(userId, WalletLedger.Totals.None);
+            if (WalletLedger.Check(WalletKinds.EntryFee, -refund, mine, WalletLedger.Pot(totals.Values)) is { } problem)
+                return BadRequest(new { message = problem });
+
+            foreach (var original in standing)
+            {
+                var reversal = NewEntry(userId, season, WalletKinds.EntryFee, -original.AmountKobo, reason, null, actor);
+                reversal.ReversesEntryId = original.Id;
+                db.WalletEntries.Add(reversal);
+            }
+            AuditLogger.Log(db, subject: user, actor: actor, action: "WalletMarkedUnpaid",
+                details: $"{WalletLedger.Naira(refund)} entry fee for {season} taken out of the pot: {reason}");
+            await db.SaveChangesAsync();
+            return Ok(await SummaryAsync(season, current, fee));
+        }
+        finally
+        {
+            Writes.Release();
+        }
+    }
+
+    // Cancels an entry with an opposite one. The original stays, marked as reversed. Undoing an
+    // entry fee is marking the player unpaid, so it's the system admin's call (as MarkUnpaid).
     [HttpPost("entries/{id:guid}/reverse")]
     [RequirePermission(Permissions.WalletManage)]
     public async Task<IActionResult> Reverse(Guid id, ReverseEntryRequest request)
@@ -144,6 +200,9 @@ public class AdminWalletController(AppDbContext db) : ControllerBase
         {
             var original = await db.WalletEntries.Include(e => e.User).FirstOrDefaultAsync(e => e.Id == id);
             if (original is null) return NotFound(new { message = "Entry not found." });
+            if (original.Kind == WalletKinds.EntryFee && actor?.IsSystemUser != true)
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new { code = "permission_denied", message = "Only the system admin can take an entry fee back out of the pot." });
             if (original.ReversesEntryId is not null)
                 return BadRequest(new { message = "A reversal can't itself be reversed. Record a new entry instead." });
             if (await db.WalletEntries.AnyAsync(e => e.ReversesEntryId == id))

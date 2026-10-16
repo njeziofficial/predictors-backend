@@ -149,6 +149,52 @@ public class WalletTests : IDisposable
     }
 
     [Fact]
+    public async Task Marking_a_player_unpaid_takes_their_fee_out_of_the_pot()
+    {
+        await PayAll(); // ₦9,000 from three
+
+        var wallet = Ok<AdminWalletDto>(await Admin().MarkUnpaid(_bob.Id, new() { Reason = "Transfer never arrived" }));
+
+        Assert.Equal((2 * Fee, 2), (wallet.PotKobo, wallet.PaidPlayers));
+        Assert.False(wallet.Players.Single(p => p.UserId == _bob.Id.ToString()).Paid);
+        // The payment stays in the history, reversed, with the reason.
+        var entries = await AdminWalletController.EntriesAsync(_db, _bob.Id, "2026/27");
+        Assert.True(entries.Single(e => e.ReversesEntryId is null).Reversed);
+        Assert.Equal("Transfer never arrived", entries.Single(e => e.ReversesEntryId is not null).Note);
+        Assert.Single(_db.AuditLogs, a => a.Action == "WalletMarkedUnpaid");
+
+        // Already unpaid: nothing to undo. Paying again counts again.
+        Assert.Contains("hasn't paid", Message(await Admin().MarkUnpaid(_bob.Id, new() { Reason = "again" })));
+        var repaid = Ok<RecordEntryFeesResultDto>(await Admin().RecordEntryFees(new() { UserIds = [_bob.Id] }));
+        Assert.Equal((1, 3 * Fee), (repaid.Recorded, repaid.Wallet.PotKobo));
+    }
+
+    [Fact]
+    public async Task A_player_cannot_be_marked_unpaid_once_their_fee_is_shared_out()
+    {
+        await PayAll();
+        await Record(_alice, WalletKinds.Winnings, 9_000_00);
+
+        Assert.Contains("smaller than the winnings", Message(await Admin().MarkUnpaid(_bob.Id, new() { Reason = "refund" })));
+        Assert.Equal(3 * Fee, Ok<AdminWalletDto>(await Admin().Get(null)).PotKobo);
+    }
+
+    [Fact]
+    public async Task Only_the_system_admin_can_reverse_an_entry_fee()
+    {
+        await PayAll();
+        var admin = new User { Name = "Dave", Email = "dave@test", Role = UserRole.Admin };
+        _db.Users.Add(admin);
+        _db.SaveChanges();
+        var fee = _db.WalletEntries.First(e => e.Kind == WalletKinds.EntryFee);
+
+        var refused = Assert.IsType<ObjectResult>(
+            await new AdminWalletController(_db) { ControllerContext = As(admin) }.Reverse(fee.Id, new() { Reason = "oops" }));
+        Assert.Equal(403, refused.StatusCode);
+        Assert.Equal(3 * Fee, Ok<AdminWalletDto>(await Admin().Get(null)).PotKobo);
+    }
+
+    [Fact]
     public async Task A_player_sees_their_own_wallet_and_the_pot()
     {
         await PayAll();

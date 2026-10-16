@@ -106,6 +106,16 @@ public class ReverseEntryRequest
     public string Reason { get; set; } = string.Empty;
 }
 
+public class MarkUnpaidRequest
+{
+    [Required, MaxLength(300)]
+    public string Reason { get; set; } = string.Empty;
+
+    // Defaults to the current season.
+    [MaxLength(16)]
+    public string? Season { get; set; }
+}
+
 public class UpdateWalletSettingsRequest
 {
     [Required, MaxLength(16)]
