@@ -18,7 +18,7 @@ public record EmailQuota(int SentToday, int SentThisMonth, int DailyLimit, int M
 }
 
 // Sends email through whichever provider the system admin chose (ScraperSettings.EmailProvider:
-// Resend, Brevo or the Gmail API), or the first one set up when they haven't chosen. It stays
+// Brevo, the Gmail API or Resend), or the first one set up, in that order, when they haven't chosen. It stays
 // inside that provider's free limits: each email is logged with the provider (EmailLog), its
 // day's and month's counts are checked first, and a few a day are kept back for password emails.
 public sealed class EmailSender(

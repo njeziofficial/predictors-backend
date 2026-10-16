@@ -329,11 +329,12 @@ public class EmailTests : IDisposable
     {
         var all = Settings(resend: true, brevo: true, gmail: true);
 
-        Assert.Equal("Resend", (await Sender(all).ActiveAsync())!.Name); // auto: Resend first
-        Choose("Brevo");
-        Assert.Equal("Brevo", (await Sender(all).ActiveAsync())!.Name);
+        Assert.Equal("Brevo", (await Sender(all).ActiveAsync())!.Name); // auto: Brevo first
+        Assert.Equal("Gmail", (await Sender(Settings(resend: true, gmail: true)).ActiveAsync())!.Name); // then Gmail, then Resend
+        Choose("Resend");
+        Assert.Equal("Resend", (await Sender(all).ActiveAsync())!.Name);
         // Chosen but not set up: the first that is.
-        Assert.Equal("Resend", (await Sender(Settings(resend: true)).ActiveAsync())!.Name);
+        Assert.Equal("Gmail", (await Sender(Settings(resend: false, gmail: true)).ActiveAsync())!.Name);
         Assert.Null(await Sender(Settings(resend: false)).ActiveAsync());
     }
 
@@ -374,8 +375,8 @@ public class EmailTests : IDisposable
 
         var status = (AdminEmailController.EmailStatusDto)((OkObjectResult)await controller.SetProvider(new("brevo"))).Value!;
         Assert.Equal(("Brevo", "Brevo"), (status.Choice, status.Active));
-        Assert.Equal(["Resend", "Brevo", "Gmail"], status.Providers.Select(p => p.Name));
-        Assert.Equal([false, true, false], status.Providers.Select(p => p.Configured));
+        Assert.Equal(["Brevo", "Gmail", "Resend"], status.Providers.Select(p => p.Name));
+        Assert.Equal([true, false, false], status.Providers.Select(p => p.Configured));
         Assert.Contains(await _db.AuditLogs.Select(a => a.Action).ToListAsync(), a => a == "EmailProviderChanged");
 
         Assert.Equal("auto", ((AdminEmailController.EmailStatusDto)((OkObjectResult)await controller.SetProvider(new("auto"))).Value!).Choice);

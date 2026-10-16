@@ -218,7 +218,8 @@ public class ChatController(
         if (body.Length == 0) return BadRequest(new { message = "Announcement can't be empty." });
 
         var sender = await db.Users.FirstAsync(u => u.Id == me);
-        var recipientsQuery = db.Users.Where(u => u.Id != me && !u.IsDisabled);
+        // Players only, like the admin notifications: the system admin account doesn't play.
+        var recipientsQuery = db.Users.Where(u => u.Id != me && !u.IsSystemUser && !u.IsDisabled);
         if (request.UserIds is { Count: > 0 })
             recipientsQuery = recipientsQuery.Where(u => request.UserIds.Contains(u.Id));
         var recipients = await recipientsQuery.Select(u => u.Id).ToListAsync();

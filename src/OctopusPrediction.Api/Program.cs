@@ -154,18 +154,18 @@ builder.Services.AddSingleton<IReminderMessageSender, TwilioReminderMessageSende
 builder.Services.AddSingleton<PushKeyProvider>();
 builder.Services.AddHttpClient<PushSender>(c => c.Timeout = TimeSpan.FromSeconds(15));
 
-// ── Email (Resend) ────────────────────────────────────────────────────────────
+// ── Email (Brevo, Gmail, Resend) ──────────────────────────────────────────────
 // Password links, welcome emails, and reminders/announcements for players without push, through
-// Resend, Brevo or the Gmail API (all HTTPS: Render's free tier blocks SMTP). A provider is
+// Brevo, the Gmail API or Resend (all HTTPS: Render's free tier blocks SMTP). A provider is
 // available once its credentials are set (Email__Brevo__ApiKey etc. on Render); the system admin
-// picks which one sends on the Settings page.
+// picks which one sends on the Settings page, else the first set up (EmailProviderNames.Order).
 builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection("Email"));
-builder.Services.AddHttpClient<ResendEmailProvider>(c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient<BrevoEmailProvider>(c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddHttpClient<GmailEmailProvider>(c => c.Timeout = TimeSpan.FromSeconds(20));
-builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<ResendEmailProvider>());
+builder.Services.AddHttpClient<ResendEmailProvider>(c => c.Timeout = TimeSpan.FromSeconds(20));
 builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<BrevoEmailProvider>());
 builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<GmailEmailProvider>());
+builder.Services.AddTransient<IEmailProvider>(sp => sp.GetRequiredService<ResendEmailProvider>());
 builder.Services.AddScoped<EmailSender>();
 builder.Services.AddHostedService<ReminderBackgroundService>();
 

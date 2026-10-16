@@ -53,7 +53,7 @@ public static class EmailProviderNames
     public const string Gmail = "Gmail";
 
     // When the admin hasn't picked one ("auto"), the first of these that's set up is used.
-    public static readonly IReadOnlyList<string> Order = [Resend, Brevo, Gmail];
+    public static readonly IReadOnlyList<string> Order = [Brevo, Gmail, Resend];
 }
 
 internal static class EmailHttp
