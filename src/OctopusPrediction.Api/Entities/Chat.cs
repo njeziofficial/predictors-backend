@@ -36,7 +36,14 @@ public class ChatMessage
     public Conversation Conversation { get; set; } = null!;
     public Guid SenderId { get; set; }
     public User Sender { get; set; } = null!;
+    // Empty for an image sent without a caption.
     public string Body { get; set; } = string.Empty;
+    // An attached image, kept in Supabase Storage under this key (ChatImages.KeyFor); null for text only, and
+    // cleared when the message is deleted. Width and height (from the sender's browser) let the
+    // app hold the image's space before it loads.
+    public string? ImageKey { get; set; }
+    public int? ImageWidth { get; set; }
+    public int? ImageHeight { get; set; }
     // Sent by an admin to many players at once; shown with an announcement style.
     public bool IsAnnouncement { get; set; }
     // The sender's own id for this message, so a retried send can't post it twice.

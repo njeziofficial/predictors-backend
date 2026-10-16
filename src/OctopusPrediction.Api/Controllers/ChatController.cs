@@ -19,7 +19,8 @@ namespace OctopusPrediction.Api.Controllers;
 [Route("api/chat")]
 [Authorize]
 public class ChatController(
-    AppDbContext db, AppCache cache, IHubContext<ChatHub, IChatClient> hub, PresenceTracker presence, ChatPushNotifier pushes)
+    AppDbContext db, AppCache cache, IHubContext<ChatHub, IChatClient> hub, PresenceTracker presence, ChatPushNotifier pushes,
+    IChatImageStore images, ILogger<ChatController> logger)
     : ControllerBase
 {
     // The inbox: conversations with at least one message, most recent first.
@@ -95,6 +96,7 @@ public class ChatController(
             .ToListAsync();
 
         var hasMore = rows.Count > ChatLimits.PageSize;
+        await LoadImageUrlsAsync(rows.Select(r => r.Message));
         var items = rows.Take(ChatLimits.PageSize)
             .Reverse()
             .Select(r => ToDto(r.Message, r.SenderName))
@@ -105,10 +107,39 @@ public class ChatController(
     [HttpPost("conversations/{id:guid}/messages")]
     public async Task<IActionResult> Send(Guid id, SendMessageRequest request)
     {
-        var me = CurrentUserId();
         var body = request.Body.Trim();
         if (body.Length == 0) return BadRequest(new { message = "Message can't be empty." });
+        return await PostAsync(id, body, request.ClientId, image: null, HttpContext.RequestAborted);
+    }
 
+    // An image (JPEG, PNG, GIF or WebP, up to ChatImages.MaxBytes), with an optional caption.
+    [HttpPost("conversations/{id:guid}/images")]
+    [RequestSizeLimit(ChatImages.MaxBytes + 64 * 1024)]
+    [RequestFormLimits(MultipartBodyLengthLimit = ChatImages.MaxBytes + 64 * 1024)]
+    public async Task<IActionResult> SendImage(Guid id, [FromForm] SendImageRequest request)
+    {
+        if (!images.IsConfigured)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "Sending images isn't set up yet." });
+        if (request.File.Length == 0) return BadRequest(new { message = "That image is empty." });
+        if (request.File.Length > ChatImages.MaxBytes)
+            return BadRequest(new { message = $"Images can be up to {ChatImages.MaxBytes / (1024 * 1024)} MB." });
+
+        var ct = HttpContext.RequestAborted;
+        using var buffer = new MemoryStream((int)request.File.Length);
+        await request.File.CopyToAsync(buffer, ct);
+        var data = buffer.ToArray();
+        if (ChatImages.Detect(data) is not { } kind)
+            return BadRequest(new { message = "Only JPEG, PNG, GIF and WebP images can be sent." });
+
+        var image = new ImageUpload(data, kind, request.Width, request.Height);
+        return await PostAsync(id, (request.Body ?? "").Trim(), request.ClientId, image, ct);
+    }
+
+    private sealed record ImageUpload(byte[] Data, ChatImages.Kind Kind, int? Width, int? Height);
+
+    private async Task<IActionResult> PostAsync(Guid id, string body, string? clientId, ImageUpload? image, CancellationToken ct)
+    {
+        var me = CurrentUserId();
         var participants = await db.ConversationParticipants
             .Where(p => p.ConversationId == id)
             .Include(p => p.User)
@@ -119,11 +150,15 @@ public class ChatController(
             return BadRequest(new { message = "This player's account is disabled, so they can't receive messages." });
 
         // A retry of a send that already went through: hand back the original.
-        if (!string.IsNullOrEmpty(request.ClientId))
+        if (!string.IsNullOrEmpty(clientId))
         {
             var existing = await db.ChatMessages
-                .FirstOrDefaultAsync(m => m.SenderId == me && m.ClientId == request.ClientId);
-            if (existing is not null) return Ok(ToDto(existing, mine.User.Name));
+                .FirstOrDefaultAsync(m => m.SenderId == me && m.ClientId == clientId, ct);
+            if (existing is not null)
+            {
+                await LoadImageUrlsAsync([existing]);
+                return Ok(ToDto(existing, mine.User.Name));
+            }
         }
 
         var message = new ChatMessage
@@ -131,21 +166,62 @@ public class ChatController(
             ConversationId = id,
             SenderId = me,
             Body = body,
-            ClientId = string.IsNullOrEmpty(request.ClientId) ? null : request.ClientId,
+            ClientId = string.IsNullOrEmpty(clientId) ? null : clientId,
         };
+        if (image is not null)
+        {
+            message.ImageKey = ChatImages.KeyFor(id, message.Id, image.Kind);
+            (message.ImageWidth, message.ImageHeight) = (image.Width, image.Height);
+            try
+            {
+                await images.PutAsync(message.ImageKey, image.Data, image.Kind.ContentType, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex, "[Chat] Couldn't store an image in Supabase Storage");
+                return StatusCode(StatusCodes.Status502BadGateway, new { message = "Couldn't upload the image. Try again." });
+            }
+        }
+
         db.ChatMessages.Add(message);
-        var conversation = await db.Conversations.FirstAsync(c => c.Id == id);
+        var conversation = await db.Conversations.FirstAsync(c => c.Id == id, ct);
         conversation.LastMessageAt = message.CreatedAt;
         // Sending a message means you've read everything before it.
         mine.LastReadAt = message.CreatedAt;
-        await db.SaveChangesAsync();
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch when (message.ImageKey is not null)
+        {
+            // Don't leave the image behind with no message pointing at it.
+            await TryDeleteImageAsync(message.ImageKey);
+            throw;
+        }
 
+        await LoadImageUrlsAsync([message]);
         var dto = ToDto(message, mine.User.Name);
         await hub.Clients.Users(participants.Select(p => p.UserId.ToString())).MessageReceived(dto);
         // And to the phones of those who don't have the app in front.
         pushes.Notify([.. participants.Where(p => p.UserId != me).Select(p => new ChatRecipient(p.UserId, id))],
-            mine.User.Name, body, announcement: false);
+            mine.User.Name, PushText(message), announcement: false);
         return Ok(dto);
+    }
+
+    // What the phone notification says: the text, marked as a photo when there is one.
+    private static string PushText(ChatMessage m) =>
+        m.ImageKey is null ? m.Body : m.Body.Length == 0 ? "📷 Photo" : $"📷 {m.Body}";
+
+    private async Task TryDeleteImageAsync(string key)
+    {
+        try
+        {
+            await images.DeleteAsync(key);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[Chat] Couldn't delete image {Key} from Supabase Storage", key);
+        }
     }
 
     [HttpPost("conversations/{id:guid}/read")]
@@ -183,9 +259,13 @@ public class ChatController(
 
         if (message.DeletedAt is null)
         {
+            var imageKey = message.ImageKey;
             message.DeletedAt = DateTime.UtcNow;
             message.Body = string.Empty;
+            (message.ImageKey, message.ImageWidth, message.ImageHeight) = (null, null, null);
             await db.SaveChangesAsync();
+            // Gone for good: a link handed out earlier stops working once the file is removed.
+            if (imageKey is not null) await TryDeleteImageAsync(imageKey);
 
             var everyone = await cache.ChatParticipantsAsync(db, message.ConversationId);
             await hub.Clients.Users(everyone.Select(u => u.ToString())).MessageDeleted(ToDto(message, message.Sender.Name));
@@ -318,6 +398,8 @@ public class ChatController(
             .ToListAsync();
 
         var online = presence.Online();
+        // The inbox shows a photo as "📷 Photo", which needs the image there.
+        await LoadImageUrlsAsync(rows.Where(r => r.Last is not null).Select(r => r.Last!.Message));
         return rows
             .Where(r => r.Other is not null && (includeEmpty || r.Last is not null))
             .Select(r => new ConversationDto(
@@ -354,9 +436,30 @@ public class ChatController(
     private async Task<bool> IsParticipantAsync(Guid conversationId, Guid userId) =>
         (await cache.ChatParticipantsAsync(db, conversationId)).Contains(userId);
 
-    private static ChatMessageDto ToDto(ChatMessage m, string senderName) => new(
+    // Signed links for the images among these messages, fetched together before ToDto uses them.
+    private IReadOnlyDictionary<string, string> _imageUrls = new Dictionary<string, string>();
+
+    private async Task LoadImageUrlsAsync(IEnumerable<ChatMessage> messages)
+    {
+        var keys = messages.Where(m => m.DeletedAt is null && m.ImageKey is not null).Select(m => m.ImageKey!).ToList();
+        if (keys.Count == 0 || !images.IsConfigured) return;
+        try
+        {
+            _imageUrls = await images.UrlsAsync(keys, HttpContext.RequestAborted);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The messages still load; their images come back on the next fetch.
+            logger.LogWarning(ex, "[Chat] Couldn't sign image links");
+        }
+    }
+
+    private ChatMessageDto ToDto(ChatMessage m, string senderName) => new(
         m.Id.ToString(), m.ConversationId.ToString(), m.SenderId.ToString(), senderName,
-        m.DeletedAt is null ? m.Body : null, m.IsAnnouncement, m.ClientId, m.CreatedAt, m.DeletedAt);
+        m.DeletedAt is null ? m.Body : null, m.IsAnnouncement, m.ClientId, m.CreatedAt, m.DeletedAt,
+        m.DeletedAt is null && m.ImageKey is not null && _imageUrls.TryGetValue(m.ImageKey, out var url)
+            ? new ChatImageDto(url, m.ImageWidth, m.ImageHeight)
+            : null);
 
     private Guid CurrentUserId() => Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 }

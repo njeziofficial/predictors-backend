@@ -55,4 +55,10 @@ public class ScraperSettings
     // account's passkeys, so only the new password signs in until fingerprint/face is set up
     // again. Off by default, as passkeys don't depend on the password. The system admin's call.
     public bool RemovePasskeysOnPasswordReset { get; set; } = false;
+
+    // The wallet ledger's current season and its entry fee (in kobo): new entries go to this
+    // season unless another is named, and "mark as paid" records this fee. The system admin's
+    // call (AdminWalletController.UpdateSettings).
+    public string WalletSeason { get; set; } = Services.WalletLedger.DefaultSeason;
+    public long WalletEntryFeeKobo { get; set; } = Services.WalletLedger.DefaultEntryFeeKobo;
 }

@@ -15,7 +15,13 @@ public record ChatMessageDto(
     bool IsAnnouncement,
     string? ClientId,
     DateTime CreatedAt,
-    DateTime? DeletedAt);
+    DateTime? DeletedAt,
+    // Null for text only, and once deleted.
+    ChatImageDto? Image = null);
+
+// A signed link that works for a while (SupabaseStorageSettings.LinkHours); fetching the messages again
+// gives a fresh one.
+public record ChatImageDto(string Url, int? Width, int? Height);
 
 public record ConversationDto(
     string Id,
@@ -40,6 +46,26 @@ public class SendMessageRequest
 
     [MaxLength(64)]
     public string? ClientId { get; set; }
+}
+
+// An image, with an optional caption. Width and height are the image's own, as the sender's
+// browser read them.
+public class SendImageRequest
+{
+    [Required]
+    public IFormFile File { get; set; } = null!;
+
+    [MaxLength(ChatLimits.MaxBody)]
+    public string? Body { get; set; }
+
+    [MaxLength(64)]
+    public string? ClientId { get; set; }
+
+    [Range(1, Services.ChatImages.MaxSide)]
+    public int? Width { get; set; }
+
+    [Range(1, Services.ChatImages.MaxSide)]
+    public int? Height { get; set; }
 }
 
 public class StartConversationRequest

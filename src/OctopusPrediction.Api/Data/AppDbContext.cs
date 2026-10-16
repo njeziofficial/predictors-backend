@@ -28,6 +28,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<EmailLog> EmailLogs => Set<EmailLog>();
     public DbSet<UserNotification> UserNotifications => Set<UserNotification>();
     public DbSet<Passkey> Passkeys => Set<Passkey>();
+    public DbSet<WalletEntry> WalletEntries => Set<WalletEntry>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -211,6 +212,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             m.HasKey(x => x.Id);
             m.Property(x => x.Body).HasMaxLength(2000);
             m.Property(x => x.ClientId).HasMaxLength(64);
+            m.Property(x => x.ImageKey).HasMaxLength(200);
             m.HasIndex(x => new { x.ConversationId, x.CreatedAt });
             m.HasIndex(x => new { x.SenderId, x.ClientId }).IsUnique();
             m.HasOne(x => x.Conversation)
@@ -247,6 +249,23 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             b.Property(x => x.WeekId).HasMaxLength(150);
             b.Property(x => x.SentByName).HasMaxLength(200);
             b.HasIndex(x => x.CreatedAt);
+        });
+
+        mb.Entity<WalletEntry>(w =>
+        {
+            w.HasKey(x => x.Id);
+            w.Property(x => x.Season).HasMaxLength(16);
+            w.Property(x => x.Kind).HasMaxLength(20);
+            w.Property(x => x.Note).HasMaxLength(300);
+            w.Property(x => x.CreatedByName).HasMaxLength(200);
+            w.HasIndex(x => new { x.Season, x.UserId });
+            // A reversal can only happen once.
+            w.HasIndex(x => x.ReversesEntryId).IsUnique();
+            // Money records outlive nothing: a player with entries can't be deleted (disable them instead).
+            w.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Restrict);
         });
 
         mb.Entity<PasswordToken>(t =>

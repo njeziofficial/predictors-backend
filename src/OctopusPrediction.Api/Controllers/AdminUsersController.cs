@@ -278,6 +278,10 @@ public class AdminUsersController(AppDbContext db, EmailSender emailSender) : Co
         if (user.Role == UserRole.Admin && actor?.IsSystemUser != true)
             return SystemUserOnly("Only the system admin can delete an admin.");
 
+        // Money records are kept for good (WalletEntry), so their player stays too.
+        if (await db.WalletEntries.AnyAsync(e => e.UserId == id))
+            return BadRequest(new { message = "This player has wallet entries (payments or winnings), so they can't be deleted. Disable them instead." });
+
         AuditLogger.Log(db, subject: user, actor: actor, action: "UserDeleted", details: $"Email: {user.Email}");
 
         db.Users.Remove(user);

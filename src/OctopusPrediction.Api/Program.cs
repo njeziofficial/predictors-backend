@@ -110,6 +110,11 @@ builder.Services.AddSignalR(opts => opts.MaximumReceiveMessageSize = 16 * 1024)
 builder.Services.AddSingleton<PresenceTracker>();
 // Chat messages to the phones of those who don't have the app in front.
 builder.Services.AddSingleton<ChatPushNotifier>();
+// Images sent in chat, kept in Supabase Storage (Supabase__Url and Supabase__ServiceKey on Render).
+builder.Services.Configure<SupabaseStorageSettings>(builder.Configuration.GetSection("Supabase"));
+builder.Services.AddHttpClient(SupabaseChatImageStore.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(30));
+// One store for the whole app, so its cache of signed links is shared.
+builder.Services.AddSingleton<IChatImageStore, SupabaseChatImageStore>();
 
 // ── App Services ──────────────────────────────────────────────────────────────
 builder.Services.AddScoped<IAuthService, AuthService>();
@@ -396,6 +401,12 @@ try
             "CREATE INDEX IF NOT EXISTS \"IX_ChatMessages_ConversationId_CreatedAt\" ON \"ChatMessages\" (\"ConversationId\", \"CreatedAt\");");
         await db.Database.ExecuteSqlRawAsync(
             "CREATE UNIQUE INDEX IF NOT EXISTS \"IX_ChatMessages_SenderId_ClientId\" ON \"ChatMessages\" (\"SenderId\", \"ClientId\");");
+        // Images in chat, kept in Supabase Storage. Same SQL as db/supabase/2026-10-16-chat-images.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "ImageKey" character varying(200) NULL;
+            ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "ImageWidth" integer NULL;
+            ALTER TABLE "ChatMessages" ADD COLUMN IF NOT EXISTS "ImageHeight" integer NULL;
+            """);
 
         // Scraped match readings waiting to be applied. Same SQL as db/supabase/2026-10-11-match-updates.sql.
         await db.Database.ExecuteSqlRawAsync("""
@@ -563,6 +574,26 @@ try
         foreach (var column in new[] { "EmailResendFrom", "EmailBrevoSender", "EmailGmailSender" })
             await db.Database.ExecuteSqlRawAsync(
                 $"ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"{column}\" character varying(256) NULL;");
+        // The wallet ledger. Same SQL as db/supabase/2026-10-16-wallet.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "WalletEntries" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE RESTRICT,
+                "Season" character varying(16) NOT NULL,
+                "Kind" character varying(20) NOT NULL,
+                "AmountKobo" bigint NOT NULL,
+                "Note" character varying(300) NULL,
+                "OccurredAt" timestamp with time zone NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "CreatedByUserId" uuid NULL,
+                "CreatedByName" character varying(200) NOT NULL,
+                "ReversesEntryId" uuid NULL REFERENCES "WalletEntries" ("Id")
+            );
+            CREATE INDEX IF NOT EXISTS "IX_WalletEntries_Season_UserId" ON "WalletEntries" ("Season", "UserId");
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_WalletEntries_ReversesEntryId" ON "WalletEntries" ("ReversesEntryId");
+            ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "WalletSeason" character varying(16) NOT NULL DEFAULT '2026/27';
+            ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "WalletEntryFeeKobo" bigint NOT NULL DEFAULT 300000;
+            """);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "PushSubscriptions" (
                 "Id" uuid NOT NULL PRIMARY KEY,

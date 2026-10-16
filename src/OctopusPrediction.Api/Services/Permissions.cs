@@ -36,6 +36,8 @@ public static class Permissions
     public const string CompetitionsManage = "competitions.manage";
     public const string MessagesBroadcast = "messages.broadcast";
     public const string NotificationsSend = "notifications.send";
+    public const string WalletView = "wallet.view";
+    public const string WalletManage = "wallet.manage";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
     [
@@ -75,6 +77,10 @@ public static class Permissions
             "Message every player, or a chosen group, at once. Players can reply in their chat with you.", true),
         new(NotificationsSend, "Messages", "Send push notifications",
             "Send a notification to players' phones: everyone, players yet to predict a week, or chosen players. Players who turned admin notifications off don't get it.", false),
+        new(WalletView, "Wallet", "View wallets",
+            "See who has paid the entry fee, the pot, and what each player has won and been paid.", true),
+        new(WalletManage, "Wallet", "Record payments",
+            "Mark entry fees as paid, record winnings and payouts, and reverse mistakes.", false),
     ];
 
     public static bool IsKnown(string key) => All.Any(p => p.Key == key);
