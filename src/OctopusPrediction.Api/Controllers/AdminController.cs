@@ -242,6 +242,31 @@ public class AdminController(
         return Ok(new AuditLogSettingsDto(settings.AuditLogEnabled));
     }
 
+    // How long the app may sit idle before it signs a user out. Only the system user by default;
+    // it can be granted to other admins (Permissions.IdleTimeoutManage).
+    [HttpPut("idle-timeout")]
+    [RequirePermission(Permissions.IdleTimeoutManage)]
+    public async Task<IActionResult> SetIdleTimeout(IdleTimeoutDto request)
+    {
+        if (request.Minutes is < IdleTimeout.MinMinutes or > IdleTimeout.MaxMinutes)
+            return BadRequest(new
+            {
+                message = $"Choose between {IdleTimeout.MinMinutes} and {IdleTimeout.MaxMinutes} minutes."
+            });
+
+        var settings = await ScraperSettingsStore.GetOrCreateAsync(db, defaults.Value);
+        if (settings.IdleTimeoutMinutes != request.Minutes)
+        {
+            var currentUserId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+            var actor = await db.Users.FirstOrDefaultAsync(u => u.Id == currentUserId);
+            AuditLogger.Log(db, subject: null, actor: actor, action: "SettingChanged", field: "IdleTimeoutMinutes",
+                previousValue: settings.IdleTimeoutMinutes.ToString(), newValue: request.Minutes.ToString());
+        }
+        settings.IdleTimeoutMinutes = request.Minutes;
+        await db.SaveChangesAsync();
+        return Ok(new IdleTimeoutDto(settings.IdleTimeoutMinutes));
+    }
+
     public record PasskeySettingsDto(bool RemoveOnPasswordReset);
 
     // Whether a password reset also removes the account's passkeys (fingerprint/face sign-in).

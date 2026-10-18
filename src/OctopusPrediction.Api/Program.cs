@@ -278,6 +278,9 @@ try
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AuditLogEnabled\" boolean NOT NULL DEFAULT true;");
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"RemovePasskeysOnPasswordReset\" boolean NOT NULL DEFAULT false;");
+        // Idle sign-out. Same SQL as db/supabase/2026-10-18-idle-timeout.sql.
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"IdleTimeoutMinutes\" integer NOT NULL DEFAULT 15;");
         // Prediction rules. Same SQL as db/supabase/2026-10-09-prediction-rules.sql.
         await db.Database.ExecuteSqlRawAsync(
             "ALTER TABLE \"ScraperSettings\" ADD COLUMN IF NOT EXISTS \"AllowPartialPredictions\" boolean NOT NULL DEFAULT false;");

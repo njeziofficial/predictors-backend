@@ -61,4 +61,9 @@ public class ScraperSettings
     // call (AdminWalletController.UpdateSettings).
     public string WalletSeason { get; set; } = Services.WalletLedger.DefaultSeason;
     public long WalletEntryFeeKobo { get; set; } = Services.WalletLedger.DefaultEntryFeeKobo;
+
+    // Minutes without activity (no tap, click, key press or scroll) after which the app signs a
+    // user out. Enforced by the app (predictors/src/lib/idleTimeout.ts); changing it needs the
+    // "security.idle_timeout" permission, which only the system user has by default.
+    public int IdleTimeoutMinutes { get; set; } = Services.IdleTimeout.DefaultMinutes;
 }

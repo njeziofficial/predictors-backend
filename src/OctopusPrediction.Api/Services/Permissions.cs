@@ -38,6 +38,7 @@ public static class Permissions
     public const string NotificationsSend = "notifications.send";
     public const string WalletView = "wallet.view";
     public const string WalletManage = "wallet.manage";
+    public const string IdleTimeoutManage = "security.idle_timeout";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
     [
@@ -73,6 +74,8 @@ public static class Permissions
             "Choose whether incomplete predictions are allowed, whether submitted predictions are final, and when a week locks.", false),
         new(CompetitionsManage, "Settings", "Switch competitions on or off",
             "Open a competition (like the Champions League) to players, or close it. A closed one is hidden, can't be predicted and isn't scraped.", false),
+        new(IdleTimeoutManage, "Settings", "Change the idle sign-out time",
+            "Choose how many minutes without activity sign everyone (players and admins) out of the app.", false),
         new(MessagesBroadcast, "Messages", "Send announcements",
             "Message every player, or a chosen group, at once. Players can reply in their chat with you.", true),
         new(NotificationsSend, "Messages", "Send push notifications",

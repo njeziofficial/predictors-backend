@@ -21,7 +21,8 @@ public record SettingsSnapshot(
     bool AllowPartialPredictions,
     bool PredictionsFinal,
     bool LockWeekAtFirstKickoff,
-    bool AllowLatePredictions);
+    bool AllowLatePredictions,
+    int IdleTimeoutMinutes);
 
 // Every week with its fixtures, already mapped, plus the lookups the endpoints need.
 public sealed class WeeksSnapshot
@@ -69,7 +70,7 @@ public static class CachedReads
         {
             var s = await ScraperSettingsStore.GetOrCreateAsync(db, defaults);
             return new SettingsSnapshot(s.PredictionsLocked, s.RegistrationClosed, s.AllowPartialPredictions,
-                s.PredictionsFinal, s.LockWeekAtFirstKickoff, s.AllowLatePredictions);
+                s.PredictionsFinal, s.LockWeekAtFirstKickoff, s.AllowLatePredictions, s.IdleTimeoutMinutes);
         });
 
     // Competitions change only when the system admin switches one, so they live with the settings.

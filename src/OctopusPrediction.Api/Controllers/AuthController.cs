@@ -59,6 +59,15 @@ public class AuthController(
         return Ok(new { open = !settings.RegistrationClosed });
     }
 
+    // Anonymous, like registration-status: how long the app may sit idle before it signs out.
+    // Not a secret, and the app checks it before it has (or while it's refreshing) a token.
+    [HttpGet("session-settings")]
+    public async Task<IActionResult> GetSessionSettings()
+    {
+        var settings = await cache.SettingsAsync(db, defaults.Value);
+        return Ok(new IdleTimeoutDto(IdleTimeout.Clamp(settings.IdleTimeoutMinutes)));
+    }
+
     [HttpPost("register")]
     public async Task<IActionResult> Register(RegisterRequest request)
     {
