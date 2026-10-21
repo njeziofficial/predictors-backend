@@ -19,9 +19,14 @@ public class PredictionRulesTests : IDisposable
 {
     private static readonly DateTime Now = DateTime.UtcNow;
 
-    // Week 8 is under way: its first match has been played, two are still to come.
+    // Week 6 was played weeks ago, but for one match postponed until tonight.
+    private const string Week6 = "week-6";
+    private const string W6Played = "w6-played", W6Rescheduled = "w6-rescheduled";
+    // Week 8 is under way: its first match has been played, two are still to come, and one more
+    // has been moved to after week 9 starts.
     private const string Week8 = "week-8";
     private const string W8Played = "w8-played", W8Tonight = "w8-tonight", W8Monday = "w8-monday";
+    private const string W8Rescheduled = "w8-rescheduled";
     // Week 9 hasn't started: its first match is on Friday.
     private const string Week9 = "week-9";
     private const string W9Friday = "w9-friday", W9Saturday = "w9-saturday";
@@ -35,12 +40,16 @@ public class PredictionRulesTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
         _db.Users.Add(new User { Id = _player, Name = "Player", Email = "player@test" });
         _db.MatchWeeks.AddRange(
+            new MatchWeek { Id = Week6, Name = "Week 6", Competition = "La Liga" },
             new MatchWeek { Id = Week8, Name = "Week 8", Competition = "La Liga" },
             new MatchWeek { Id = Week9, Name = "Week 9", Competition = "La Liga" });
         _db.Fixtures.AddRange(
+            Match(W6Played, Week6, Now.AddDays(-20), FixtureStatus.Ended),
+            Match(W6Rescheduled, Week6, Now.AddHours(6)),
             Match(W8Played, Week8, Now.AddDays(-1), FixtureStatus.Ended),
             Match(W8Tonight, Week8, Now.AddHours(3)),
             Match(W8Monday, Week8, Now.AddDays(1)),
+            Match(W8Rescheduled, Week8, Now.AddDays(7)),
             Match(W9Friday, Week9, Now.AddDays(4)),
             Match(W9Saturday, Week9, Now.AddDays(5)));
         _db.SaveChanges();
@@ -241,6 +250,74 @@ public class PredictionRulesTests : IDisposable
 
         Assert.IsType<OkObjectResult>(result);
         Assert.Equal(OutcomeType.Draw, OutcomeOf(W9Friday));
+    }
+
+    // ── Rescheduled matches (kicking off after the next week has started) ───────────────────────
+
+    [Fact]
+    public async Task Rescheduled_CanBeChangedUntilItsOwnKickoffThoughItsWeekLockedLongAgo()
+    {
+        Rules(lockWeek: true);
+        Saved(W6Played, Week6, OutcomeType.HomeWin);
+        Saved(W6Rescheduled, Week6, OutcomeType.HomeWin);
+
+        var result = await Submit(Week6, (W6Rescheduled, "draw"));
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Equal(OutcomeType.Draw, OutcomeOf(W6Rescheduled));
+    }
+
+    [Fact]
+    public async Task Rescheduled_LocksThirtySecondsBeforeItsKickoff()
+    {
+        Rules(lockWeek: true);
+        _db.Fixtures.Find(W6Rescheduled)!.Kickoff = DateTime.UtcNow.AddSeconds(20);
+        _db.SaveChanges();
+        Saved(W6Rescheduled, Week6, OutcomeType.HomeWin);
+
+        var result = await Submit(Week6, (W6Rescheduled, "draw"));
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal(OutcomeType.HomeWin, OutcomeOf(W6Rescheduled));
+    }
+
+    [Fact]
+    public async Task Rescheduled_DoesNotReopenTheRestOfALockedWeek()
+    {
+        Rules(lockWeek: true);
+        Saved(W8Monday, Week8, OutcomeType.HomeWin);
+
+        var regular = await Submit(Week8, (W8Monday, "draw"));
+        var rescheduled = await Submit(Week8, (W8Rescheduled, "draw"));
+
+        Assert.Contains("locked when its first match kicked off", Message(Assert.IsType<BadRequestObjectResult>(regular)));
+        Assert.Equal(OutcomeType.HomeWin, OutcomeOf(W8Monday));
+        Assert.IsType<OkObjectResult>(rescheduled);
+        Assert.Equal(OutcomeType.Draw, OutcomeOf(W8Rescheduled));
+    }
+
+    [Fact]
+    public async Task Rescheduled_IsNeverNeededToCompleteTheWeek()
+    {
+        Rules(partial: false);
+
+        var week = await Submit(Week8, (W8Tonight, "draw"), (W8Monday, "draw"));
+        var alone = await Submit(Week8, (W8Rescheduled, "away_win"));
+
+        Assert.IsType<OkObjectResult>(week);
+        Assert.IsType<OkObjectResult>(alone);
+    }
+
+    [Fact]
+    public async Task Rescheduled_FinalPredictionsStayFinal()
+    {
+        Rules(final: true);
+        Saved(W6Rescheduled, Week6, OutcomeType.HomeWin);
+
+        var result = await Submit(Week6, (W6Rescheduled, "draw"));
+
+        Assert.Contains("is final", Message(Assert.IsType<BadRequestObjectResult>(result)));
+        Assert.Equal(OutcomeType.HomeWin, OutcomeOf(W6Rescheduled));
     }
 
     // ── Other rules ─────────────────────────────────────────────────────────────────────────

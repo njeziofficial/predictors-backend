@@ -69,7 +69,10 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
         var open = playable
             .Where(f => f.Status == FixtureStatus.PreMatch && f.Kickoff > lockAt)
             .ToDictionary(f => f.Id);
-        var weekStarted = playable.Any(f => f.Status != FixtureStatus.PreMatch || f.Kickoff <= lockAt);
+        // Rescheduled matches lock at their own kickoff only, and don't start or lock the week.
+        var rescheduled = await RescheduledFixtures.InWeekAsync(db, week);
+        var weekStarted = playable.Any(f => !rescheduled.Contains(f.Id)
+            && (f.Status != FixtureStatus.PreMatch || f.Kickoff <= lockAt));
 
         var weekFixtureIds = week.Fixtures.Select(f => f.Id).ToList();
         var mine = await db.Predictions
@@ -77,8 +80,15 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
             .ToDictionaryAsync(p => p.FixtureId);
 
         // Late predictions: only for players who had predicted nothing when the week locked.
-        if (settings.LockWeekAtFirstKickoff && weekStarted && !(settings.AllowLatePredictions && mine.Count == 0))
-            return BadRequest(new { message = "Predictions for this week locked when its first match kicked off." });
+        // A locked week still takes its rescheduled matches.
+        const string weekLockedMessage = "Predictions for this week locked when its first match kicked off.";
+        var weekLocked = settings.LockWeekAtFirstKickoff && weekStarted
+            && !(settings.AllowLatePredictions && mine.Keys.All(rescheduled.Contains));
+        if (weekLocked)
+        {
+            open = open.Values.Where(f => rescheduled.Contains(f.Id)).ToDictionary(f => f.Id);
+            if (open.Count == 0) return BadRequest(new { message = weekLockedMessage });
+        }
 
         if (open.Count == 0)
             return BadRequest(new { message = "Predictions are locked for this week." });
@@ -115,10 +125,12 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
                 });
         }
 
-        if (!settings.AllowPartialPredictions)
+        // Rescheduled matches are predicted on their own: they never count as missing, and
+        // submitting only those doesn't need the rest of the week.
+        if (!settings.AllowPartialPredictions && submitted.Keys.Any(id => !rescheduled.Contains(id)))
         {
             var missing = open.Values
-                .Where(f => !mine.ContainsKey(f.Id) && !submitted.ContainsKey(f.Id))
+                .Where(f => !rescheduled.Contains(f.Id) && !mine.ContainsKey(f.Id) && !submitted.ContainsKey(f.Id))
                 .OrderBy(f => f.Kickoff)
                 .ToList();
             if (missing.Count > 0)
@@ -130,7 +142,7 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
         }
 
         if (submitted.Count == 0)
-            return BadRequest(new { message = "Pick at least one match to predict." });
+            return BadRequest(new { message = weekLocked ? weekLockedMessage : "Pick at least one match to predict." });
 
         var now = DateTime.UtcNow;
         foreach (var (fixtureId, s) in submitted)
