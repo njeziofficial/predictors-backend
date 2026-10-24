@@ -34,8 +34,10 @@ internal static class TeamNameNormalizer
         ["racing de santander"] = "racing-santander",
         ["racing sant"] = "racing-santander", // Fox Sports truncates to "Racing Sant."
         ["racing"] = "racing-santander",
+        ["r racing club"] = "racing-santander", // laliga.com writes "R. Racing Club"
         ["espanyol"] = "espanyol",
         ["rcd espanyol"] = "espanyol",
+        ["espanyol de barcelona"] = "espanyol", // laliga.com: "RCD Espanyol de Barcelona"
         ["malaga"] = "malaga",
         ["celta vigo"] = "celta-vigo",
         ["celta de vigo"] = "celta-vigo",

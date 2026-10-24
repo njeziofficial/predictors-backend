@@ -162,6 +162,99 @@ public class SourceStatusTests
     public void Espn_league_code_comes_from_the_configured_page(string configured, string expected) =>
         Assert.Equal(expected, EspnSource.LeagueCode(configured));
 
+    private const string Scores365Json = """
+        {"games":[
+          {"id":4750828,"competitionId":11,"roundNum":9,"roundName":"Round","startTime":"2026-10-16T19:00:00+00:00","statusGroup":4,"statusText":"Ended","gameTimeDisplay":"",
+           "homeCompetitor":{"name":"Deportivo A Coruña","score":1},"awayCompetitor":{"name":"Levante","score":1}},
+          {"id":4750840,"competitionId":11,"roundNum":10,"roundName":"Round","startTime":"2026-10-24T16:30:00+00:00","statusGroup":3,"statusText":"2nd Half","gameTimeDisplay":"65'",
+           "homeCompetitor":{"name":"Valencia","score":1},"awayCompetitor":{"name":"Villarreal","score":0}},
+          {"id":4750841,"competitionId":11,"roundNum":10,"roundName":"Round","startTime":"2026-10-24T16:30:00+00:00","statusGroup":3,"statusText":"Halftime","gameTimeDisplay":"45'",
+           "homeCompetitor":{"name":"Osasuna","score":0},"awayCompetitor":{"name":"Girona","score":0}},
+          {"id":4750842,"competitionId":11,"roundNum":10,"roundName":"Round","startTime":"2026-10-25T20:00:00+00:00","statusGroup":2,"statusText":"Scheduled","gameTimeDisplay":"",
+           "homeCompetitor":{"name":"Barcelona","score":-1},"awayCompetitor":{"name":"Real Madrid","score":-1}},
+          {"id":4750843,"competitionId":11,"roundNum":10,"roundName":"Round","startTime":"2026-10-24T12:00:00+00:00","statusGroup":4,"statusText":"Postponed","gameTimeDisplay":"",
+           "homeCompetitor":{"name":"Rayo Vallecano","score":-1},"awayCompetitor":{"name":"Elche","score":-1}},
+          {"id":5000001,"competitionId":572,"roundNum":3,"roundName":"Round","startTime":"2026-10-24T19:00:00+00:00","statusGroup":2,"statusText":"Scheduled",
+           "homeCompetitor":{"name":"Chelsea","score":-1},"awayCompetitor":{"name":"Ajax","score":-1}}
+        ]}
+        """;
+
+    [Fact]
+    public void Scores365_reads_its_api()
+    {
+        var matches = Scores365Source.Parse(Scores365Json, 11).ToDictionary(m => m.Home);
+
+        // Another competition's match in the answer is left out.
+        Assert.Equal(5, matches.Count);
+        var ended = matches["Deportivo A Coruña"];
+        Assert.Equal(FixtureStatus.Ended, MatchReading.MapStatus(ended));
+        Assert.Equal(("1", "1", "Round 9", "365-4750828"), (ended.ScoreHome, ended.ScoreAway, ended.Round, ended.Id));
+
+        var live = matches["Valencia"];
+        Assert.Equal(FixtureStatus.Live, MatchReading.MapStatus(live));
+        Assert.Equal(65, MatchReading.ParseMinute(live.Stage));
+        Assert.Equal(("1", "0"), (live.ScoreHome, live.ScoreAway));
+        Assert.Equal(FixtureStatus.HalfTime, MatchReading.MapStatus(matches["Osasuna"]));
+        Assert.Equal(FixtureStatus.Postponed, MatchReading.MapStatus(matches["Rayo Vallecano"]));
+
+        var upcoming = matches["Barcelona"];
+        Assert.Equal(FixtureStatus.PreMatch, MatchReading.MapStatus(upcoming));
+        Assert.Null(upcoming.ScoreHome);
+        Assert.Equal("Round 10", upcoming.Round);
+        Assert.Equal(new DateTime(2026, 10, 25, 20, 0, 0, DateTimeKind.Utc), MatchReading.ParseKickoff(upcoming.Time)!.Value.Utc);
+    }
+
+    [Theory]
+    [InlineData("https://www.365scores.com/football/league/laliga-11", 11)]
+    [InlineData("https://www.365scores.com/football/league/uefa-champions-league-572/", 572)]
+    [InlineData(null, 11)]
+    public void Scores365_competition_comes_from_the_configured_page(string? configured, int expected) =>
+        Assert.Equal(expected, Scores365Source.CompetitionId(configured));
+
+    // laliga.com's results page, cut down to its embedded data.
+    private const string LaLigaHtml = """
+        <html><body><script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"season":"2026",
+          "gameweek":{"id":10384,"week":10,"name":"Matchday 10"},
+          "matches":[
+            {"id":102339,"date":"2026-10-23T19:00:00+00:00","home_score":1,"away_score":1,"status":"FullTime",
+             "home_team":{"name":"Deportivo Alavés SAD","nickname":"Deportivo Alavés"},"away_team":{"name":"Málaga Club de Fútbol SAD","nickname":"Málaga CF"}},
+            {"id":102348,"date":"2026-10-24T16:30:00+00:00","home_score":1,"away_score":0,"status":"SecondHalf",
+             "home_team":{"nickname":"Valencia CF"},"away_team":{"nickname":"Villarreal CF"}},
+            {"id":102349,"date":"2026-10-24T16:30:00+00:00","home_score":0,"away_score":0,"status":"HalfTime",
+             "home_team":{"nickname":"CA Osasuna"},"away_team":{"nickname":"Girona FC"}},
+            {"id":102350,"date":"2026-10-24T12:00:00+00:00","status":"Postponed",
+             "home_team":{"nickname":"Rayo Vallecano"},"away_team":{"nickname":"Elche CF"}},
+            {"id":102343,"date":"2026-10-25T20:00:00+00:00","status":"PreMatch",
+             "home_team":{"nickname":"FC Barcelona"},"away_team":{"nickname":"Real Madrid"}}
+          ]}}}</script></body></html>
+        """;
+
+    [Fact]
+    public void LaLiga_reads_its_results_page()
+    {
+        var matchday = LaLigaSource.Parse(LaLigaHtml)!;
+        Assert.Equal((2026, 10), (matchday.Season, matchday.Week));
+        var matches = matchday.Matches.ToDictionary(m => m.Home);
+
+        var ended = matches["Deportivo Alavés"];
+        Assert.Equal(FixtureStatus.Ended, MatchReading.MapStatus(ended));
+        Assert.Equal(("Málaga CF", "1", "1", "Round 10", "laliga-102339"), (ended.Away, ended.ScoreHome, ended.ScoreAway, ended.Round, ended.Id));
+
+        Assert.Equal(FixtureStatus.Live, MatchReading.MapStatus(matches["Valencia CF"]));
+        Assert.Equal(("1", "0"), (matches["Valencia CF"].ScoreHome, matches["Valencia CF"].ScoreAway));
+        Assert.Equal(FixtureStatus.HalfTime, MatchReading.MapStatus(matches["CA Osasuna"]));
+        Assert.Equal(FixtureStatus.Postponed, MatchReading.MapStatus(matches["Rayo Vallecano"]));
+
+        var upcoming = matches["FC Barcelona"];
+        Assert.Equal(FixtureStatus.PreMatch, MatchReading.MapStatus(upcoming));
+        Assert.Null(upcoming.ScoreHome);
+        Assert.Equal(new DateTime(2026, 10, 25, 20, 0, 0, DateTimeKind.Utc), MatchReading.ParseKickoff(upcoming.Time)!.Value.Utc);
+    }
+
+    [Fact]
+    public void LaLiga_page_without_match_data_reads_as_nothing() =>
+        Assert.Null(LaLigaSource.Parse("<html><body>Access denied</body></html>"));
+
     [Fact]
     public void A_retired_source_drops_out_of_a_saved_plan()
     {
