@@ -29,6 +29,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<UserNotification> UserNotifications => Set<UserNotification>();
     public DbSet<Passkey> Passkeys => Set<Passkey>();
     public DbSet<WalletEntry> WalletEntries => Set<WalletEntry>();
+    public DbSet<BallonDorEvent> BallonDorEvents => Set<BallonDorEvent>();
+    public DbSet<BallonDorPick> BallonDorPicks => Set<BallonDorPick>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -266,6 +268,22 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
               .WithMany()
               .HasForeignKey(x => x.UserId)
               .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        mb.Entity<BallonDorEvent>(e =>
+        {
+            e.HasKey(x => x.Year);
+            e.Property(x => x.Year).ValueGeneratedNever();
+        });
+
+        mb.Entity<BallonDorPick>(p =>
+        {
+            p.HasKey(x => x.Id);
+            p.HasIndex(x => new { x.Year, x.UserId }).IsUnique();
+            p.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Cascade);
         });
 
         mb.Entity<PasswordToken>(t =>

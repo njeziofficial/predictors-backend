@@ -599,6 +599,31 @@ try
             ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "WalletSeason" character varying(16) NOT NULL DEFAULT '2026/27';
             ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "WalletEntryFeeKobo" bigint NOT NULL DEFAULT 300000;
             """);
+        // The Ballon d'Or side game. Same SQL as db/supabase/2026-10-26-ballon-dor.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "BallonDorEvents" (
+                "Year" integer NOT NULL PRIMARY KEY,
+                "Nominees" text[] NOT NULL,
+                "LocksAt" timestamp with time zone NOT NULL,
+                "Result" text[] NULL,
+                "WinnerPotKobo" bigint NOT NULL,
+                "TopFivePotKobo" bigint NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS "BallonDorPicks" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "Year" integer NOT NULL,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "Picks" text[] NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL,
+                "WinnerPrizeEntryId" uuid NULL,
+                "TopFivePrizeEntryId" uuid NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_BallonDorPicks_Year_UserId" ON "BallonDorPicks" ("Year", "UserId");
+            ALTER TABLE "BallonDorEvents" ADD COLUMN IF NOT EXISTS "Enabled" boolean NOT NULL DEFAULT true;
+            """);
+        await BallonDorGame.SeedAsync(db, DateTime.UtcNow);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "PushSubscriptions" (
                 "Id" uuid NOT NULL PRIMARY KEY,

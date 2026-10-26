@@ -18,7 +18,8 @@ public class AdminWalletController(AppDbContext db) : ControllerBase
 {
     // One change at a time, so two admins recording at once can't share out the same money
     // twice: each checks the totals as they stand after the other has saved. (One server.)
-    private static readonly SemaphoreSlim Writes = new(1, 1);
+    // Shared with the Ballon d'Or prizes, which write to the same ledger.
+    internal static readonly SemaphoreSlim Writes = new(1, 1);
 
     [HttpGet]
     [RequirePermission(Permissions.WalletView)]
