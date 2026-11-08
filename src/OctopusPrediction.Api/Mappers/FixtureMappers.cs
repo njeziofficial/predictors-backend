@@ -18,7 +18,8 @@ public static class FixtureMappers
         f.LiveMinute,
         f.AfterExtraTimeHome.HasValue && f.AfterExtraTimeAway.HasValue
             ? new ScoreDto(f.AfterExtraTimeHome.Value, f.AfterExtraTimeAway.Value)
-            : null
+            : null,
+        f.SpecialPotKobo
     );
 
     public static MatchWeekDto ToDto(MatchWeek week) => new(

@@ -204,6 +204,8 @@ public class AdminWalletController(AppDbContext db) : ControllerBase
             if (original.Kind == WalletKinds.EntryFee && actor?.IsSystemUser != true)
                 return StatusCode(StatusCodes.Status403Forbidden,
                     new { code = "permission_denied", message = "Only the system admin can take an entry fee back out of the pot." });
+            if (await db.SpecialGamePrizes.AnyAsync(p => p.EntryId == id || p.PayoutEntryId == id))
+                return BadRequest(new { message = "This belongs to a special game. Change it on the Special games page." });
             if (original.ReversesEntryId is not null)
                 return BadRequest(new { message = "A reversal can't itself be reversed. Record a new entry instead." });
             if (await db.WalletEntries.AnyAsync(e => e.ReversesEntryId == id))
@@ -286,9 +288,12 @@ public class AdminWalletController(AppDbContext db) : ControllerBase
             .OrderByDescending(e => e.OccurredAt).ThenByDescending(e => e.CreatedAt)
             .ToListAsync();
         var reversed = entries.Where(e => e.ReversesEntryId is not null).Select(e => e.ReversesEntryId!.Value).ToHashSet();
+        var prizes = await db.SpecialGamePrizes.AsNoTracking().Where(p => p.UserId == userId).ToDictionaryAsync(p => p.EntryId);
         return [.. entries.Select(e => new WalletEntryDto(
             e.Id.ToString(), e.UserId.ToString(), e.Season, e.Kind, e.AmountKobo, e.Note, e.OccurredAt, e.CreatedAt,
-            e.CreatedByName, e.ReversesEntryId?.ToString(), reversed.Contains(e.Id)))];
+            e.CreatedByName, e.ReversesEntryId?.ToString(), reversed.Contains(e.Id),
+            prizes.GetValueOrDefault(e.Id) is { } prize ? (prize.PayoutEntryId is null ? "owed" : "paid") : null,
+            prizes.GetValueOrDefault(e.Id)?.PaidAt))];
     }
 
     private static WalletEntry NewEntry(Guid userId, string season, string kind, long amount, string? note, DateTime? occurredAt, User? actor) => new()

@@ -22,6 +22,10 @@ public class Fixture
     public bool WentToExtraTime { get; set; }
     public int? AfterExtraTimeHome { get; set; }
     public int? AfterExtraTimeAway { get; set; }
+    // Set on a special game (see SpecialGames): the organiser's pot, in kobo.
+    public long? SpecialPotKobo { get; set; }
+    // Why its prizes couldn't follow the latest result, until the system admin acts.
+    public string? SpecialProblem { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public ICollection<Prediction> Predictions { get; set; } = [];
 }

@@ -16,7 +16,10 @@ public record WalletEntryDto(
     // Set on a reversal: the entry it cancels.
     string? ReversesEntryId,
     // Set on an entry that has been reversed.
-    bool Reversed);
+    bool Reversed,
+    // On a special game prize: "owed" until the organiser marks it as "paid", and when they did.
+    string? PrizeStatus = null,
+    DateTime? PrizePaidAt = null);
 
 // A player's own wallet for one season. The pot is shown to everyone: it's a closed group.
 public record MyWalletDto(

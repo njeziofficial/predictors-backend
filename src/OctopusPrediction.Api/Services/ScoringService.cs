@@ -73,6 +73,8 @@ public class ScoringService(AppDbContext db) : IScoringService
         if (week?.ReconciledAt is not null) week.ReconciledAt = null;
 
         await db.SaveChangesAsync();
+
+        if (fixture.SpecialPotKobo is not null) await SpecialGames.SettleAsync(db, fixtureId, actor: null);
     }
 
     // When each player's previous points were first imported. CreatedAt, not UpdatedAt: re-importing

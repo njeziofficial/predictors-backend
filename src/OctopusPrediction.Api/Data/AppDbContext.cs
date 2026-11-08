@@ -31,6 +31,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<WalletEntry> WalletEntries => Set<WalletEntry>();
     public DbSet<BallonDorEvent> BallonDorEvents => Set<BallonDorEvent>();
     public DbSet<BallonDorPick> BallonDorPicks => Set<BallonDorPick>();
+    public DbSet<SpecialGamePrize> SpecialGamePrizes => Set<SpecialGamePrize>();
 
     protected override void OnModelCreating(ModelBuilder mb)
     {
@@ -71,6 +72,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             f.Property(x => x.WeekId).HasMaxLength(150);
             f.Property(x => x.HomeTeam).HasMaxLength(150);
             f.Property(x => x.AwayTeam).HasMaxLength(150);
+            f.Property(x => x.SpecialProblem).HasMaxLength(500);
             f.HasOne(x => x.Week)
              .WithMany(x => x.Fixtures)
              .HasForeignKey(x => x.WeekId)
@@ -284,6 +286,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
               .WithMany()
               .HasForeignKey(x => x.UserId)
               .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        mb.Entity<SpecialGamePrize>(p =>
+        {
+            p.HasKey(x => x.Id);
+            p.Property(x => x.FixtureId).HasMaxLength(100);
+            p.HasIndex(x => new { x.FixtureId, x.UserId }).IsUnique();
+            p.HasOne(x => x.Fixture)
+              .WithMany()
+              .HasForeignKey(x => x.FixtureId)
+              .OnDelete(DeleteBehavior.Cascade);
+            p.HasOne(x => x.User)
+              .WithMany()
+              .HasForeignKey(x => x.UserId)
+              .OnDelete(DeleteBehavior.Restrict);
         });
 
         mb.Entity<PasswordToken>(t =>

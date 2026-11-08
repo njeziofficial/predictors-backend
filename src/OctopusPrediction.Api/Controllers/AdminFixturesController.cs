@@ -65,6 +65,8 @@ public class AdminFixturesController(AppDbContext db, IScoringService scoring) :
     {
         var week = await db.MatchWeeks.FindAsync(id);
         if (week is null) return NotFound(new { message = "Week not found." });
+        if (await db.Fixtures.AnyAsync(f => f.WeekId == id && f.SpecialPotKobo != null))
+            return BadRequest(new { message = "This week has a special game. Remove it on the Special games page first." });
 
         db.MatchWeeks.Remove(week);
         await db.SaveChangesAsync();
@@ -142,6 +144,8 @@ public class AdminFixturesController(AppDbContext db, IScoringService scoring) :
     {
         var fixture = await db.Fixtures.FindAsync(id);
         if (fixture is null) return NotFound(new { message = "Fixture not found." });
+        if (fixture.SpecialPotKobo is not null)
+            return BadRequest(new { message = "This is a special game. Remove it on the Special games page first." });
 
         db.Fixtures.Remove(fixture);
         await db.SaveChangesAsync();

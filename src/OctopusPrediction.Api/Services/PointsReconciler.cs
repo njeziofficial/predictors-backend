@@ -62,6 +62,10 @@ public class PointsReconciler(AppDbContext db, IScoringService scoring, ILogger<
                 logger.LogWarning("[Points] Corrected {User} on {Match}: {Previous} -> {Points} pts, week {PreviousWeek} -> {Week}",
                     c.UserName, c.Match, c.PreviousPoints, c.Points, c.PreviousWeekId, c.WeekId);
         }
+
+        // The same safety net for special game prizes, should settling a result have failed.
+        foreach (var fixture in fixtures.Values.Where(f => f.SpecialPotKobo is not null))
+            await SpecialGames.SettleAsync(db, fixture.Id, actor, ct);
         return corrections;
     }
 

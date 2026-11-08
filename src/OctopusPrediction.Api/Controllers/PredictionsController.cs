@@ -104,6 +104,9 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
             // page left open across a kickoff can still save the rest.
             if (!open.TryGetValue(item.FixtureId, out var fixture)) continue;
 
+            if (SpecialGames.IsOutdatedPick(fixture, outcome.Value))
+                return BadRequest(new { message = $"{fixture.HomeTeam} vs {fixture.AwayTeam} is a special game: predict the exact score." });
+
             if (outcome == OutcomeType.CorrectScore && (item.HomeGoals is not >= 0 || item.AwayGoals is not >= 0))
                 return BadRequest(new { message = $"Enter the score for {fixture.HomeTeam} vs {fixture.AwayTeam}." });
 
@@ -114,6 +117,7 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
         {
             var changed = submitted.Values.FirstOrDefault(s =>
                 mine.TryGetValue(s.Fixture.Id, out var p)
+                && !SpecialGames.IsOutdatedPick(s.Fixture, p.Outcome)
                 && (p.Outcome != s.Outcome
                     // Goals only count for a score pick (other picks may carry stale ones).
                     || (s.Outcome == OutcomeType.CorrectScore && (p.HomeGoals != s.Home || p.AwayGoals != s.Away))));
@@ -149,8 +153,9 @@ public class PredictionsController(AppDbContext db, IOptions<LiveScraperSettings
         {
             if (mine.TryGetValue(fixtureId, out var existing))
             {
-                // Under PredictionsFinal only unchanged resubmissions get here; leave them be.
-                if (settings.PredictionsFinal) continue;
+                // Under PredictionsFinal only unchanged resubmissions get here, and picks being
+                // replaced because their match became special. Leave the former be.
+                if (settings.PredictionsFinal && !SpecialGames.IsOutdatedPick(s.Fixture, existing.Outcome)) continue;
                 existing.Outcome = s.Outcome;
                 existing.HomeGoals = s.Home;
                 existing.AwayGoals = s.Away;

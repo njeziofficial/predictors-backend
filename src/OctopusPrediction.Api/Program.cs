@@ -624,6 +624,21 @@ try
             ALTER TABLE "BallonDorEvents" ADD COLUMN IF NOT EXISTS "Enabled" boolean NOT NULL DEFAULT true;
             """);
         await BallonDorGame.SeedAsync(db, DateTime.UtcNow);
+        // Special games. Same SQL as db/supabase/2026-11-08-special-games.sql.
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "Fixtures" ADD COLUMN IF NOT EXISTS "SpecialPotKobo" bigint NULL;
+            ALTER TABLE "Fixtures" ADD COLUMN IF NOT EXISTS "SpecialProblem" character varying(500) NULL;
+            CREATE TABLE IF NOT EXISTS "SpecialGamePrizes" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "FixtureId" character varying(100) NOT NULL REFERENCES "Fixtures" ("Id") ON DELETE CASCADE,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE RESTRICT,
+                "AmountKobo" bigint NOT NULL,
+                "EntryId" uuid NOT NULL,
+                "PayoutEntryId" uuid NULL,
+                "PaidAt" timestamp with time zone NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_SpecialGamePrizes_FixtureId_UserId" ON "SpecialGamePrizes" ("FixtureId", "UserId");
+            """);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "PushSubscriptions" (
                 "Id" uuid NOT NULL PRIMARY KEY,
