@@ -38,6 +38,7 @@ public static class Permissions
     public const string NotificationsSend = "notifications.send";
     public const string WalletView = "wallet.view";
     public const string WalletManage = "wallet.manage";
+    public const string SpecialGamesManage = "special_games.manage";
     public const string IdleTimeoutManage = "security.idle_timeout";
 
     public static readonly IReadOnlyList<PermissionInfo> All =
@@ -84,6 +85,8 @@ public static class Permissions
             "See who has paid the entry fee, the pot, and what each player has won and been paid.", true),
         new(WalletManage, "Wallet", "Record payments",
             "Mark entry fees as paid, record winnings and payouts, and reverse mistakes.", false),
+        new(SpecialGamesManage, "Wallet", "Run special games",
+            "Put a pot on a match, switch special games on or off for players, and mark winners as paid.", false),
     ];
 
     public static bool IsKnown(string key) => All.Any(p => p.Key == key);

@@ -22,7 +22,8 @@ public record SettingsSnapshot(
     bool PredictionsFinal,
     bool LockWeekAtFirstKickoff,
     bool AllowLatePredictions,
-    int IdleTimeoutMinutes);
+    int IdleTimeoutMinutes,
+    bool SpecialGamesEnabled = true);
 
 // Every week with its fixtures, already mapped, plus the lookups the endpoints need.
 public sealed class WeeksSnapshot
@@ -70,7 +71,7 @@ public static class CachedReads
         {
             var s = await ScraperSettingsStore.GetOrCreateAsync(db, defaults);
             return new SettingsSnapshot(s.PredictionsLocked, s.RegistrationClosed, s.AllowPartialPredictions,
-                s.PredictionsFinal, s.LockWeekAtFirstKickoff, s.AllowLatePredictions, s.IdleTimeoutMinutes);
+                s.PredictionsFinal, s.LockWeekAtFirstKickoff, s.AllowLatePredictions, s.IdleTimeoutMinutes, s.SpecialGamesEnabled);
         });
 
     // Competitions change only when the system admin switches one, so they live with the settings.
@@ -89,6 +90,9 @@ public static class CachedReads
         cache.GetOrCreateAsync("weeks", CacheRegion.Fixtures, TimeSpan.FromMinutes(5), async () =>
         {
             var weeks = await db.MatchWeeks.AsNoTracking().Include(w => w.Fixtures).ToListAsync();
+            // Switched off, special games reach players as ordinary matches. (Untracked copies.)
+            if (!await SpecialGames.EnabledAsync(db))
+                foreach (var fixture in weeks.SelectMany(w => w.Fixtures)) fixture.SpecialPotKobo = null;
             var ordered = weeks
                 .OrderBy(w => w.Fixtures.Count == 0 ? DateTime.MaxValue : w.Fixtures.Min(f => f.Kickoff))
                 .ToList();

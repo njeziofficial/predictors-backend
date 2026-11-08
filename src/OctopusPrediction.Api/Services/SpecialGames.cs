@@ -5,7 +5,7 @@ using OctopusPrediction.Api.Entities;
 
 namespace OctopusPrediction.Api.Services;
 
-// Special games: the system admin puts a pot on a match (Fixture.SpecialPotKobo), players can only
+// Special games: an admin with "Run special games" puts a pot on a match (Fixture.SpecialPotKobo), players can only
 // predict its exact score, and everyone who gets it right shares the pot equally, rounded down to
 // the kobo. A pot nobody wins isn't paid.
 //
@@ -15,6 +15,10 @@ namespace OctopusPrediction.Api.Services;
 public static class SpecialGames
 {
     public static long Share(long pot, int winners) => winners == 0 ? 0 : pot / winners;
+
+    // The switch for the whole feature. Off, prizes already in wallets stay, but none are added.
+    public static async Task<bool> EnabledAsync(AppDbContext db, CancellationToken ct = default) =>
+        await db.ScraperSettings.AsNoTracking().Select(s => (bool?)s.SpecialGamesEnabled).FirstOrDefaultAsync(ct) ?? true;
 
     // A pick made before the match was made special. It can't win the pot, and can be replaced
     // with a score even when predictions are final, since the rules changed after it was made.
@@ -78,6 +82,9 @@ public static class SpecialGames
     // Plans every change first, and touches nothing unless all of it can happen. The caller saves.
     private static async Task<string?> ApplyAsync(AppDbContext db, Fixture fixture, User? actor, CancellationToken ct)
     {
+        // Paused while switched off (it catches up when switched back on). Removing a game still works.
+        if (fixture.SpecialPotKobo is not null && !await EnabledAsync(db, ct)) return null;
+
         var prizes = await db.SpecialGamePrizes.Include(p => p.User).Where(p => p.FixtureId == fixture.Id).ToListAsync(ct);
         var predictions = fixture.SpecialPotKobo is null
             ? []

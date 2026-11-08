@@ -7,6 +7,7 @@
 --
 -- Run in Supabase: Dashboard → SQL Editor → New query → paste this file → Run.
 
+ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "SpecialGamesEnabled" boolean NOT NULL DEFAULT true;
 ALTER TABLE "Fixtures" ADD COLUMN IF NOT EXISTS "SpecialPotKobo" bigint NULL;
 ALTER TABLE "Fixtures" ADD COLUMN IF NOT EXISTS "SpecialProblem" character varying(500) NULL;
 CREATE TABLE IF NOT EXISTS "SpecialGamePrizes" (
@@ -26,3 +27,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS "IX_SpecialGamePrizes_FixtureId_UserId" ON "Sp
 -- DROP TABLE IF EXISTS "SpecialGamePrizes";
 -- ALTER TABLE "Fixtures" DROP COLUMN IF EXISTS "SpecialProblem";
 -- ALTER TABLE "Fixtures" DROP COLUMN IF EXISTS "SpecialPotKobo";
+-- ALTER TABLE "ScraperSettings" DROP COLUMN IF EXISTS "SpecialGamesEnabled";

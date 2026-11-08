@@ -94,6 +94,10 @@ public sealed class CacheInvalidationInterceptor(AppCache cache, LiveUpdateNotif
                 continue;
 
             regions.UnionWith(affected);
+            // The cached weeks show or hide special games by this switch.
+            if (type == typeof(ScraperSettings) && entry.State == EntityState.Modified
+                && entry.Property(nameof(ScraperSettings.SpecialGamesEnabled)).IsModified)
+                regions.Add(CacheRegion.Fixtures);
         }
 
         if (regions.Count > 0) _pending.AddOrUpdate(context, regions);

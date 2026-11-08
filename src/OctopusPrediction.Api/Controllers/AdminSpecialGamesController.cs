@@ -12,11 +12,12 @@ using OctopusPrediction.Api.Services;
 namespace OctopusPrediction.Api.Controllers;
 
 // Running special games (see SpecialGames): which matches have a pot, who won it, and whether the
-// organiser has sent each winner their share. The system admin only.
+// organiser has sent each winner their share. Needs "Run special games", which only the system
+// admin has until they give it to someone.
 [ApiController]
 [Route("api/admin/special-games")]
 [Authorize(Roles = "Admin")]
-[SystemUserOnly]
+[RequirePermission(Permissions.SpecialGamesManage)]
 public class AdminSpecialGamesController(AppDbContext db) : ControllerBase
 {
     // A match stops taking predictions this long before kickoff, so it can't be made special later.
@@ -24,6 +25,31 @@ public class AdminSpecialGamesController(AppDbContext db) : ControllerBase
 
     [HttpGet]
     public async Task<IActionResult> List() => Ok(await GamesAsync());
+
+    [HttpGet("enabled")]
+    public async Task<IActionResult> GetEnabled() => Ok(new { enabled = await SpecialGames.EnabledAsync(db) });
+
+    // Shows special games to players or hides them. Back on, any result missed meanwhile is paid.
+    [HttpPut("enabled")]
+    public async Task<IActionResult> SetEnabled(SetSpecialGamesEnabledRequest request)
+    {
+        var settings = await db.ScraperSettings.FirstOrDefaultAsync();
+        if (settings is null) return StatusCode(StatusCodes.Status503ServiceUnavailable, new { message = "Settings aren't ready yet. Try again shortly." });
+
+        if (settings.SpecialGamesEnabled != request.Enabled)
+        {
+            var actor = await CurrentUserAsync();
+            settings.SpecialGamesEnabled = request.Enabled;
+            AuditLogger.Log(db, subject: null, actor: actor, action: "SpecialGamesSwitched",
+                details: $"Special games {(request.Enabled ? "shown to" : "hidden from")} players");
+            await db.SaveChangesAsync();
+
+            if (request.Enabled)
+                foreach (var id in await db.Fixtures.Where(f => f.SpecialPotKobo != null).Select(f => f.Id).ToListAsync())
+                    await SpecialGames.SettleAsync(db, id, actor);
+        }
+        return Ok(new { enabled = request.Enabled });
+    }
 
     // Makes a match special, or changes its pot. A pot changed after the result moves the prizes.
     [HttpPut("{fixtureId}")]

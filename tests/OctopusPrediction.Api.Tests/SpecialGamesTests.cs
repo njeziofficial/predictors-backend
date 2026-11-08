@@ -88,8 +88,58 @@ public class SpecialGamesTests : IDisposable
         new(_week.Id, [new PredictionItemRequest(_match.Id, outcome, home, away)]);
 
     [Fact]
-    public void Only_the_system_user_runs_special_games() =>
-        Assert.NotNull(typeof(AdminSpecialGamesController).GetCustomAttributes(typeof(SystemUserOnlyAttribute), inherit: true).SingleOrDefault());
+    public void Running_special_games_needs_a_permission_nobody_has_by_default()
+    {
+        var required = Assert.Single(typeof(AdminSpecialGamesController).GetCustomAttributes(typeof(RequirePermissionAttribute), inherit: true));
+        Assert.Equal(Permissions.SpecialGamesManage, ((RequirePermissionAttribute)required).Permission);
+        Assert.False(Permissions.All.Single(p => p.Key == Permissions.SpecialGamesManage).DefaultAllowed);
+    }
+
+    private async Task Switch(bool on) => Assert.IsType<OkObjectResult>(await Admin().SetEnabled(new SetSpecialGamesEnabledRequest { Enabled = on }));
+
+    private Task<WeeksSnapshot> Weeks() => new AppCache(new MemoryCache(new MemoryCacheOptions())).WeeksAsync(_db);
+
+    [Fact]
+    public async Task Switched_off_a_special_game_is_an_ordinary_match_to_players()
+    {
+        await Special();
+        Assert.Equal(Pot, (await Weeks()).FixturesById[_match.Id].SpecialPotKobo);
+
+        await Switch(false);
+
+        Assert.Null((await Weeks()).FixturesById[_match.Id].SpecialPotKobo);
+        Ok<object>(await Predictions(_alice).Submit(Submission("home_win")));
+        // The admin still sees it, to run it.
+        Assert.Equal(Pot, Ok<List<SpecialGameDto>>(await Admin().List()).Single().PotKobo);
+    }
+
+    [Fact]
+    public async Task Switched_off_no_prize_is_paid_until_it_is_switched_back_on()
+    {
+        await Special();
+        Picked(_alice, 2, 1);
+        await Switch(false);
+
+        await Result(FixtureStatus.Ended, 2, 1);
+        Assert.Empty(_db.WalletEntries);
+
+        await Switch(true);
+        Assert.Equal(Pot, Balance(_alice));
+    }
+
+    [Fact]
+    public async Task Switching_off_leaves_prizes_already_won_and_they_can_still_be_paid()
+    {
+        await Special();
+        Picked(_alice, 2, 1);
+        await Result(FixtureStatus.Ended, 2, 1);
+
+        await Switch(false);
+        Assert.Equal(Pot, Balance(_alice));
+
+        await SetPaid(_alice, true);
+        Assert.Equal("paid", Ok<MyWalletDto>(await Wallet(_alice).Get(null)).Entries.Single(e => e.Kind == WalletKinds.Adjustment).PrizeStatus);
+    }
 
     [Fact]
     public async Task A_special_game_takes_only_an_exact_score()

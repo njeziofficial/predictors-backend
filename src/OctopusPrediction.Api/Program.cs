@@ -626,6 +626,7 @@ try
         await BallonDorGame.SeedAsync(db, DateTime.UtcNow);
         // Special games. Same SQL as db/supabase/2026-11-08-special-games.sql.
         await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "ScraperSettings" ADD COLUMN IF NOT EXISTS "SpecialGamesEnabled" boolean NOT NULL DEFAULT true;
             ALTER TABLE "Fixtures" ADD COLUMN IF NOT EXISTS "SpecialPotKobo" bigint NULL;
             ALTER TABLE "Fixtures" ADD COLUMN IF NOT EXISTS "SpecialProblem" character varying(500) NULL;
             CREATE TABLE IF NOT EXISTS "SpecialGamePrizes" (

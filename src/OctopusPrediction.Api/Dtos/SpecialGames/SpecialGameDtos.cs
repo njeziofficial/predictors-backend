@@ -33,6 +33,11 @@ public class SetSpecialPotRequest
     public long PotKobo { get; set; }
 }
 
+public class SetSpecialGamesEnabledRequest
+{
+    public bool Enabled { get; set; }
+}
+
 public class SetSpecialPrizePaidRequest
 {
     public bool Paid { get; set; }

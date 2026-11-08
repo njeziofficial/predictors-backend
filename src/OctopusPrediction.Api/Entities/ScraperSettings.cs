@@ -62,6 +62,9 @@ public class ScraperSettings
     public string WalletSeason { get; set; } = Services.WalletLedger.DefaultSeason;
     public long WalletEntryFeeKobo { get; set; } = Services.WalletLedger.DefaultEntryFeeKobo;
 
+    // Off: players see special games as ordinary matches and no new prizes are paid (SpecialGames).
+    public bool SpecialGamesEnabled { get; set; } = true;
+
     // Minutes without activity (no tap, click, key press or scroll) after which the app signs a
     // user out. Enforced by the app (predictors/src/lib/idleTimeout.ts); changing it needs the
     // "security.idle_timeout" permission, which only the system user has by default.
