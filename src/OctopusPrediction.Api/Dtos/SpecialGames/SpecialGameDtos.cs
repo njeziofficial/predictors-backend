@@ -12,6 +12,15 @@ public record SpecialPrizeDto(
     bool Paid,
     DateTime? PaidAt);
 
+// One player's score on a special game, for those who run them. Correct once the match has ended.
+public record SpecialPickDto(
+    string UserId,
+    string Name,
+    string? WhatsAppName,
+    int HomeGoals,
+    int AwayGoals,
+    bool Correct);
+
 public record SpecialGameDto(
     string FixtureId,
     string WeekName,

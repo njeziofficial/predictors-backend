@@ -304,6 +304,29 @@ public class SpecialGamesTests : IDisposable
     }
 
     [Fact]
+    public async Task An_admin_can_see_who_predicted_what()
+    {
+        await Special();
+        Picked(_alice, 2, 1);
+        Picked(_bob, 0, 0);
+
+        var picks = Ok<List<SpecialPickDto>>(await Admin().Picks(_match.Id));
+        Assert.Equal(["Alice", "Bob"], picks.Select(p => p.Name));
+        Assert.Equal((2, 1), (picks[0].HomeGoals, picks[0].AwayGoals));
+        Assert.DoesNotContain(picks, p => p.Correct);
+
+        // Once it's over, those who got it come first.
+        await Result(FixtureStatus.Ended, 0, 0);
+        picks = Ok<List<SpecialPickDto>>(await Admin().Picks(_match.Id));
+        Assert.Equal(["Bob", "Alice"], picks.Select(p => p.Name));
+        Assert.Equal([true, false], picks.Select(p => p.Correct));
+    }
+
+    [Fact]
+    public async Task There_are_no_predictions_to_see_on_an_ordinary_match() =>
+        Assert.IsType<NotFoundObjectResult>(await Admin().Picks(_match.Id));
+
+    [Fact]
     public async Task Prizes_cannot_be_reversed_from_the_general_wallet_page()
     {
         await Special();

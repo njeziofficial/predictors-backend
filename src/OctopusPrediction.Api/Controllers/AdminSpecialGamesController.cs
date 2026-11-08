@@ -48,6 +48,25 @@ public class AdminSpecialGamesController(AppDbContext db) : ControllerBase
         return Ok(new { enabled = request.Enabled });
     }
 
+    // Who predicted what, those who got it first. Only for people who run special games: players
+    // never see each other's scores.
+    [HttpGet("{fixtureId}/picks")]
+    public async Task<IActionResult> Picks(string fixtureId)
+    {
+        var fixture = await db.Fixtures.AsNoTracking().FirstOrDefaultAsync(f => f.Id == fixtureId && f.SpecialPotKobo != null);
+        if (fixture is null) return NotFound(new { message = "That special game wasn't found." });
+
+        var picks = await db.SpecialGamePicks.AsNoTracking().Include(p => p.User)
+            .Where(p => p.FixtureId == fixtureId)
+            .ToListAsync();
+        return Ok(picks
+            .Select(p => new SpecialPickDto(
+                p.UserId.ToString(), p.User.Name, p.User.WhatsAppName, p.HomeGoals, p.AwayGoals, SpecialGames.Called(fixture, p)))
+            .OrderByDescending(p => p.Correct)
+            .ThenBy(p => string.IsNullOrWhiteSpace(p.WhatsAppName) ? p.Name : p.WhatsAppName, StringComparer.OrdinalIgnoreCase)
+            .ToList());
+    }
+
     // Makes a match special, or changes its pot. A pot changed after the result moves the prizes.
     [HttpPut("{fixtureId}")]
     public async Task<IActionResult> SetPot(string fixtureId, SetSpecialPotRequest request)
