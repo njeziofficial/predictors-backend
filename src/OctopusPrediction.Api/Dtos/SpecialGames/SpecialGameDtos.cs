@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using OctopusPrediction.Api.Dtos.Fixtures;
 
 namespace OctopusPrediction.Api.Dtos.SpecialGames;
@@ -22,11 +23,36 @@ public record SpecialGameDto(
     ScoreDto? FinalScore,
     long PotKobo,
     int ScorePicks,
-    // Picks made before the match was made special: they can't win the pot.
-    int OutdatedPicks,
     // Why the wallets couldn't follow the latest result or pot, until the admin acts.
     string? Problem,
     List<SpecialPrizeDto> Prizes);
+
+// One game on a player's Special games tab. Other players' scores are never included.
+public record PlayerSpecialGameDto(
+    string FixtureId,
+    string Competition,
+    string WeekName,
+    string HomeTeam,
+    string AwayTeam,
+    DateTime Kickoff,
+    string Status,
+    ScoreDto? FinalScore,
+    long PotKobo,
+    bool Open,
+    int Entries,
+    int? MyHomeGoals,
+    int? MyAwayGoals,
+    int Winners,
+    long? MyPrizeKobo);
+
+public class SubmitSpecialPickRequest
+{
+    [Range(0, 99)]
+    public int HomeGoals { get; set; }
+
+    [Range(0, 99)]
+    public int AwayGoals { get; set; }
+}
 
 public class SetSpecialPotRequest
 {

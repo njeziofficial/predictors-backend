@@ -20,16 +20,13 @@ namespace OctopusPrediction.Api.Controllers;
 [RequirePermission(Permissions.SpecialGamesManage)]
 public class AdminSpecialGamesController(AppDbContext db) : ControllerBase
 {
-    // A match stops taking predictions this long before kickoff, so it can't be made special later.
-    private static readonly TimeSpan KickoffLockLead = TimeSpan.FromSeconds(30);
-
     [HttpGet]
     public async Task<IActionResult> List() => Ok(await GamesAsync());
 
     [HttpGet("enabled")]
     public async Task<IActionResult> GetEnabled() => Ok(new { enabled = await SpecialGames.EnabledAsync(db) });
 
-    // Shows special games to players or hides them. Back on, any result missed meanwhile is paid.
+    // Shows the Special games tab to players or hides it. Back on, any result missed meanwhile is paid.
     [HttpPut("enabled")]
     public async Task<IActionResult> SetEnabled(SetSpecialGamesEnabledRequest request)
     {
@@ -60,8 +57,7 @@ public class AdminSpecialGamesController(AppDbContext db) : ControllerBase
 
         var fixture = await db.Fixtures.FirstOrDefaultAsync(f => f.Id == fixtureId);
         if (fixture is null) return NotFound(new { message = "Match not found." });
-        if (fixture.SpecialPotKobo is null
-            && (fixture.Status != FixtureStatus.PreMatch || fixture.Kickoff <= DateTime.UtcNow + KickoffLockLead))
+        if (fixture.SpecialPotKobo is null && !SpecialGames.IsOpen(fixture))
             return BadRequest(new { message = "A match can only be made special before it kicks off." });
 
         if (await SpecialGames.SetPotAsync(db, fixture, request.PotKobo, await CurrentUserAsync()) is { } problem)
@@ -140,10 +136,10 @@ public class AdminSpecialGamesController(AppDbContext db) : ControllerBase
             .OrderByDescending(f => f.Kickoff)
             .ToListAsync();
         var ids = fixtures.Select(f => f.Id).ToList();
-        var picks = await db.Predictions.AsNoTracking()
+        var picks = await db.SpecialGamePicks.AsNoTracking()
             .Where(p => ids.Contains(p.FixtureId))
-            .GroupBy(p => new { p.FixtureId, Score = p.Outcome == OutcomeType.CorrectScore })
-            .Select(g => new { g.Key.FixtureId, g.Key.Score, Count = g.Count() })
+            .GroupBy(p => p.FixtureId)
+            .Select(g => new { FixtureId = g.Key, Count = g.Count() })
             .ToListAsync();
         var prizes = (await db.SpecialGamePrizes.AsNoTracking().Include(p => p.User)
                 .Where(p => ids.Contains(p.FixtureId))
@@ -151,13 +147,10 @@ public class AdminSpecialGamesController(AppDbContext db) : ControllerBase
                 .ToListAsync())
             .ToLookup(p => p.FixtureId);
 
-        int Count(string fixtureId, bool score) =>
-            picks.FirstOrDefault(p => p.FixtureId == fixtureId && p.Score == score)?.Count ?? 0;
-
         return [.. fixtures.Select(f => new SpecialGameDto(
             f.Id, f.Week.Name, f.Week.Competition, f.HomeTeam, f.AwayTeam, f.Kickoff, FixtureMappers.MapStatus(f.Status),
             f.FinalScoreHome is { } home && f.FinalScoreAway is { } away ? new ScoreDto(home, away) : null,
-            f.SpecialPotKobo!.Value, Count(f.Id, true), Count(f.Id, false), f.SpecialProblem,
+            f.SpecialPotKobo!.Value, picks.FirstOrDefault(p => p.FixtureId == f.Id)?.Count ?? 0, f.SpecialProblem,
             [.. prizes[f.Id].Select(p => new SpecialPrizeDto(
                 p.UserId.ToString(), p.User.Name, p.User.WhatsAppName, p.AmountKobo, p.PayoutEntryId is not null, p.PaidAt))]))];
     }

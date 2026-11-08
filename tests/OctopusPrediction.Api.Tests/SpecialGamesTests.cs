@@ -15,8 +15,8 @@ using OctopusPrediction.Api.Services.Caching;
 
 namespace OctopusPrediction.Api.Tests;
 
-// Special games: exact scores only, the pot shared by those who get it, in their wallets, following
-// any correction to the result, and paid status visible to the player.
+// Special games: a score on their own tab, leaving normal predictions alone; the pot shared by
+// those who get it, in their wallets, following any correction; paid status visible to the player.
 public class SpecialGamesTests : IDisposable
 {
     private const long Pot = 10_000_00;
@@ -37,6 +37,7 @@ public class SpecialGamesTests : IDisposable
         _carol = new User { Name = "Carol", Email = "carol@test" };
         _db.Users.AddRange(_system, _alice, _bob, _carol);
         _db.ScraperSettings.Add(new ScraperSettings { Id = 1 });
+        _db.Competitions.Add(new Competition { Id = "la-liga", Name = "La Liga", Enabled = true });
         _week = new MatchWeek { Id = "w1", Name = "Week 1", Competition = "La Liga", CompetitionId = "la-liga" };
         _match = new Fixture { Id = "f1", WeekId = "w1", HomeTeam = "Real", AwayTeam = "Barca", Kickoff = DateTime.UtcNow.AddHours(2) };
         _db.MatchWeeks.Add(_week);
@@ -55,6 +56,7 @@ public class SpecialGamesTests : IDisposable
     };
 
     private AdminSpecialGamesController Admin() => new(_db) { ControllerContext = As(_system) };
+    private SpecialGamesController Player(User user) => new(_db) { ControllerContext = As(user) };
     private WalletController Wallet(User user) => new(_db) { ControllerContext = As(user) };
     private PredictionsController Predictions(User user) =>
         new(_db, Options.Create(new LiveScraperSettings()), new AppCache(new MemoryCache(new MemoryCacheOptions()))) { ControllerContext = As(user) };
@@ -64,11 +66,14 @@ public class SpecialGamesTests : IDisposable
     private static string Message(IActionResult result) =>
         (string)Assert.IsType<BadRequestObjectResult>(result).Value!.GetType().GetProperty("message")!.GetValue(((BadRequestObjectResult)result).Value)!;
 
-    private void Picked(User user, int home, int away, OutcomeType outcome = OutcomeType.CorrectScore)
+    private void Picked(User user, int home, int away)
     {
-        _db.Predictions.Add(new Prediction { UserId = user.Id, FixtureId = _match.Id, WeekId = _week.Id, Outcome = outcome, HomeGoals = home, AwayGoals = away });
+        _db.SpecialGamePicks.Add(new SpecialGamePick { UserId = user.Id, FixtureId = _match.Id, HomeGoals = home, AwayGoals = away });
         _db.SaveChanges();
     }
+
+    private Task<IActionResult> Submit(User user, int home, int away) =>
+        Player(user).Submit(_match.Id, new SubmitSpecialPickRequest { HomeGoals = home, AwayGoals = away });
 
     private async Task Special(long pot = Pot) => Ok<List<SpecialGameDto>>(await Admin().SetPot(_match.Id, new SetSpecialPotRequest { PotKobo = pot }));
 
@@ -84,7 +89,9 @@ public class SpecialGamesTests : IDisposable
     private async Task<List<SpecialGameDto>> SetPaid(User user, bool paid) =>
         Ok<List<SpecialGameDto>>(await Admin().SetPaid(_match.Id, user.Id, new SetSpecialPrizePaidRequest { Paid = paid }));
 
-    private SubmitPredictionsRequest Submission(string outcome, int? home = null, int? away = null) =>
+    private async Task Switch(bool on) => Assert.IsType<OkObjectResult>(await Admin().SetEnabled(new SetSpecialGamesEnabledRequest { Enabled = on }));
+
+    private SubmitPredictionsRequest Normal(string outcome, int? home = null, int? away = null) =>
         new(_week.Id, [new PredictionItemRequest(_match.Id, outcome, home, away)]);
 
     [Fact]
@@ -95,76 +102,77 @@ public class SpecialGamesTests : IDisposable
         Assert.False(Permissions.All.Single(p => p.Key == Permissions.SpecialGamesManage).DefaultAllowed);
     }
 
-    private async Task Switch(bool on) => Assert.IsType<OkObjectResult>(await Admin().SetEnabled(new SetSpecialGamesEnabledRequest { Enabled = on }));
-
-    private Task<WeeksSnapshot> Weeks() => new AppCache(new MemoryCache(new MemoryCacheOptions())).WeeksAsync(_db);
-
     [Fact]
-    public async Task Switched_off_a_special_game_is_an_ordinary_match_to_players()
+    public async Task A_special_game_leaves_the_normal_prediction_and_points_alone()
     {
         await Special();
-        Assert.Equal(Pot, (await Weeks()).FixturesById[_match.Id].SpecialPotKobo);
 
-        await Switch(false);
+        // The usual options still work on the match, and the special score is kept apart.
+        Ok<object>(await Predictions(_alice).Submit(Normal("home_win")));
+        Ok<List<PlayerSpecialGameDto>>(await Submit(_alice, 2, 1));
 
-        Assert.Null((await Weeks()).FixturesById[_match.Id].SpecialPotKobo);
-        Ok<object>(await Predictions(_alice).Submit(Submission("home_win")));
-        // The admin still sees it, to run it.
-        Assert.Equal(Pot, Ok<List<SpecialGameDto>>(await Admin().List()).Single().PotKobo);
+        var normal = _db.Predictions.Single();
+        Assert.Equal(OutcomeType.HomeWin, normal.Outcome);
+        Assert.Single(_db.SpecialGamePicks);
+
+        await Result(FixtureStatus.Ended, 2, 1);
+        _db.ChangeTracker.Clear();
+
+        // League points as for any match, and the pot on top.
+        Assert.Equal(2, _db.Predictions.Single().PointsEarned);
+        Assert.Equal(Pot, Balance(_alice));
     }
 
     [Fact]
-    public async Task Switched_off_no_prize_is_paid_until_it_is_switched_back_on()
+    public async Task A_normal_correct_score_does_not_win_the_pot()
     {
         await Special();
-        Picked(_alice, 2, 1);
-        await Switch(false);
+        Ok<object>(await Predictions(_alice).Submit(Normal("correct_score", 2, 1)));
 
         await Result(FixtureStatus.Ended, 2, 1);
+
+        Assert.Equal(ScoringService.CorrectScorePoints, _db.Predictions.AsNoTracking().Single().PointsEarned);
         Assert.Empty(_db.WalletEntries);
-
-        await Switch(true);
-        Assert.Equal(Pot, Balance(_alice));
     }
 
     [Fact]
-    public async Task Switching_off_leaves_prizes_already_won_and_they_can_still_be_paid()
+    public async Task A_score_can_be_changed_until_kickoff()
     {
         await Special();
-        Picked(_alice, 2, 1);
-        await Result(FixtureStatus.Ended, 2, 1);
+        Ok<List<PlayerSpecialGameDto>>(await Submit(_alice, 1, 0));
+        var game = Ok<List<PlayerSpecialGameDto>>(await Submit(_alice, 3, 2)).Single();
+        Assert.Equal((3, 2, 1), (game.MyHomeGoals!.Value, game.MyAwayGoals!.Value, game.Entries));
 
-        await Switch(false);
-        Assert.Equal(Pot, Balance(_alice));
-
-        await SetPaid(_alice, true);
-        Assert.Equal("paid", Ok<MyWalletDto>(await Wallet(_alice).Get(null)).Entries.Single(e => e.Kind == WalletKinds.Adjustment).PrizeStatus);
-    }
-
-    [Fact]
-    public async Task A_special_game_takes_only_an_exact_score()
-    {
-        await Special();
-
-        Assert.Contains("exact score", Message(await Predictions(_alice).Submit(Submission("home_win"))));
-        Ok<object>(await Predictions(_alice).Submit(Submission("correct_score", 2, 1)));
-        Assert.Equal(OutcomeType.CorrectScore, _db.Predictions.Single().Outcome);
-    }
-
-    [Fact]
-    public async Task A_pick_from_before_can_be_replaced_even_when_predictions_are_final()
-    {
-        _db.ScraperSettings.Single().PredictionsFinal = true;
+        _match.Kickoff = DateTime.UtcNow.AddSeconds(10);
         _db.SaveChanges();
-        Picked(_alice, 0, 0, OutcomeType.HomeWin);
+        Assert.Contains("locked", Message(await Submit(_alice, 0, 0)));
+        Assert.False(Ok<List<PlayerSpecialGameDto>>(await Player(_alice).Get()).Single().Open);
+    }
+
+    [Fact]
+    public async Task The_system_admin_does_not_play_and_nobody_sees_other_scores()
+    {
         await Special();
+        Assert.Contains("doesn't play", Message(await Submit(_system, 1, 1)));
 
-        Ok<object>(await Predictions(_alice).Submit(Submission("correct_score", 2, 1)));
+        Picked(_alice, 2, 1);
+        var game = Ok<List<PlayerSpecialGameDto>>(await Player(_bob).Get()).Single();
+        Assert.Equal(1, game.Entries);
+        Assert.Null(game.MyHomeGoals);
+    }
 
-        var pick = _db.Predictions.Single();
-        Assert.Equal((OutcomeType.CorrectScore, 2, 1), (pick.Outcome, pick.HomeGoals!.Value, pick.AwayGoals!.Value));
-        // A score already in stays final.
-        Assert.Contains("final", Message(await Predictions(_alice).Submit(Submission("correct_score", 3, 1))));
+    [Fact]
+    public async Task The_tab_is_empty_with_no_game_or_a_closed_competition()
+    {
+        Assert.IsType<NoContentResult>(await Player(_alice).Get());
+
+        await Special();
+        Assert.Single(Ok<List<PlayerSpecialGameDto>>(await Player(_alice).Get()));
+
+        _db.Competitions.Single().Enabled = false;
+        _db.SaveChanges();
+        Assert.IsType<NoContentResult>(await Player(_alice).Get());
+        Assert.IsType<NotFoundObjectResult>(await Submit(_alice, 1, 0));
     }
 
     [Fact]
@@ -193,6 +201,9 @@ public class SpecialGamesTests : IDisposable
         Assert.Equal(0, Balance(_system));
         // The organiser's money, not the season pot's.
         Assert.All(_db.WalletEntries, e => Assert.Equal(WalletKinds.Adjustment, e.Kind));
+
+        var game = Ok<List<PlayerSpecialGameDto>>(await Player(_alice).Get()).Single();
+        Assert.Equal((2, 5_000_00L), (game.Winners, game.MyPrizeKobo!.Value));
 
         // Scoring the match again pays nobody twice.
         await new ScoringService(_db).ScoreFixtureAsync(_match.Id);
@@ -302,5 +313,44 @@ public class SpecialGamesTests : IDisposable
 
         var message = Message(await wallet.Reverse(_db.WalletEntries.Single().Id, new ReverseEntryRequest { Reason = "oops" }));
         Assert.Contains("Special games page", message);
+    }
+
+    [Fact]
+    public async Task Switched_off_the_tab_goes_but_the_admin_still_runs_it()
+    {
+        await Special();
+        await Switch(false);
+
+        Assert.IsType<NoContentResult>(await Player(_alice).Get());
+        Assert.IsType<NotFoundObjectResult>(await Submit(_alice, 2, 1));
+        Assert.Equal(Pot, Ok<List<SpecialGameDto>>(await Admin().List()).Single().PotKobo);
+    }
+
+    [Fact]
+    public async Task Switched_off_no_prize_is_paid_until_it_is_switched_back_on()
+    {
+        await Special();
+        Picked(_alice, 2, 1);
+        await Switch(false);
+
+        await Result(FixtureStatus.Ended, 2, 1);
+        Assert.Empty(_db.WalletEntries);
+
+        await Switch(true);
+        Assert.Equal(Pot, Balance(_alice));
+    }
+
+    [Fact]
+    public async Task Switching_off_leaves_prizes_already_won_and_they_can_still_be_paid()
+    {
+        await Special();
+        Picked(_alice, 2, 1);
+        await Result(FixtureStatus.Ended, 2, 1);
+
+        await Switch(false);
+        Assert.Equal(Pot, Balance(_alice));
+
+        await SetPaid(_alice, true);
+        Assert.Equal("paid", Ok<MyWalletDto>(await Wallet(_alice).Get(null)).Entries.Single(e => e.Kind == WalletKinds.Adjustment).PrizeStatus);
     }
 }

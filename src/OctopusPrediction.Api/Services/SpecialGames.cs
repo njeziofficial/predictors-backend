@@ -5,9 +5,10 @@ using OctopusPrediction.Api.Entities;
 
 namespace OctopusPrediction.Api.Services;
 
-// Special games: an admin with "Run special games" puts a pot on a match (Fixture.SpecialPotKobo), players can only
-// predict its exact score, and everyone who gets it right shares the pot equally, rounded down to
-// the kobo. A pot nobody wins isn't paid.
+// Special games: an admin with "Run special games" puts a pot on a match (Fixture.SpecialPotKobo),
+// players predict its exact score on the Special games tab (SpecialGamePick), and everyone who
+// gets it right shares the pot equally, rounded down to the kobo. A pot nobody wins isn't paid.
+// None of this touches the match's normal predictions or league points.
 //
 // Prizes follow the match's result automatically, including a wrong "finished" reading being put
 // right. They're adjustments, not winnings, like the Ballon d'Or prizes: the organiser puts them
@@ -20,18 +21,18 @@ public static class SpecialGames
     public static async Task<bool> EnabledAsync(AppDbContext db, CancellationToken ct = default) =>
         await db.ScraperSettings.AsNoTracking().Select(s => (bool?)s.SpecialGamesEnabled).FirstOrDefaultAsync(ct) ?? true;
 
-    // A pick made before the match was made special. It can't win the pot, and can be replaced
-    // with a score even when predictions are final, since the rules changed after it was made.
-    public static bool IsOutdatedPick(Fixture fixture, OutcomeType outcome) =>
-        fixture.SpecialPotKobo is not null && outcome != OutcomeType.CorrectScore;
+    // Scores close this long before kickoff, as normal predictions do.
+    public static readonly TimeSpan KickoffLockLead = TimeSpan.FromSeconds(30);
 
-    public static bool Called(Fixture fixture, Prediction prediction) =>
+    public static bool IsOpen(Fixture fixture) =>
+        fixture.Status == FixtureStatus.PreMatch && fixture.Kickoff > DateTime.UtcNow + KickoffLockLead;
+
+    public static bool Called(Fixture fixture, SpecialGamePick pick) =>
         fixture.Status == FixtureStatus.Ended
         && fixture.FinalScoreHome is not null
         && fixture.FinalScoreAway is not null
-        && prediction.Outcome == OutcomeType.CorrectScore
-        && prediction.HomeGoals == fixture.FinalScoreHome
-        && prediction.AwayGoals == fixture.FinalScoreAway;
+        && pick.HomeGoals == fixture.FinalScoreHome
+        && pick.AwayGoals == fixture.FinalScoreAway;
 
     /// <summary>
     /// Brings the wallets in line with the match as it stands. Safe to run at any time. If it
@@ -86,12 +87,12 @@ public static class SpecialGames
         if (fixture.SpecialPotKobo is not null && !await EnabledAsync(db, ct)) return null;
 
         var prizes = await db.SpecialGamePrizes.Include(p => p.User).Where(p => p.FixtureId == fixture.Id).ToListAsync(ct);
-        var predictions = fixture.SpecialPotKobo is null
+        var picks = fixture.SpecialPotKobo is null
             ? []
-            : await db.Predictions.Include(p => p.User)
+            : await db.SpecialGamePicks.Include(p => p.User)
                 .Where(p => p.FixtureId == fixture.Id && !p.User.IsSystemUser)
                 .ToListAsync(ct);
-        var winners = predictions.Where(p => Called(fixture, p)).Select(p => p.User).ToList();
+        var winners = picks.Where(p => Called(fixture, p)).Select(p => p.User).ToList();
         var share = Share(fixture.SpecialPotKobo ?? 0, winners.Count);
         if (share == 0) winners = [];
 

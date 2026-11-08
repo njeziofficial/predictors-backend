@@ -639,6 +639,16 @@ try
                 "PaidAt" timestamp with time zone NULL
             );
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_SpecialGamePrizes_FixtureId_UserId" ON "SpecialGamePrizes" ("FixtureId", "UserId");
+            CREATE TABLE IF NOT EXISTS "SpecialGamePicks" (
+                "Id" uuid NOT NULL PRIMARY KEY,
+                "FixtureId" character varying(100) NOT NULL REFERENCES "Fixtures" ("Id") ON DELETE CASCADE,
+                "UserId" uuid NOT NULL REFERENCES "Users" ("Id") ON DELETE CASCADE,
+                "HomeGoals" integer NOT NULL,
+                "AwayGoals" integer NOT NULL,
+                "CreatedAt" timestamp with time zone NOT NULL,
+                "UpdatedAt" timestamp with time zone NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_SpecialGamePicks_FixtureId_UserId" ON "SpecialGamePicks" ("FixtureId", "UserId");
             """);
         await db.Database.ExecuteSqlRawAsync("""
             CREATE TABLE IF NOT EXISTS "PushSubscriptions" (
