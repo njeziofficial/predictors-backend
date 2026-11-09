@@ -139,6 +139,11 @@ builder.Services.AddSingleton<IMatchSource, EspnSource>();
 builder.Services.AddSingleton<IMatchSource, FotMobSource>();
 builder.Services.AddSingleton<IMatchSource, Scores365Source>();
 builder.Services.AddSingleton<IMatchSource, LaLigaSource>();
+builder.Services.AddSingleton<IMatchSource, AsSource>();
+builder.Services.AddSingleton<IMatchSource, MarcaSource>();
+builder.Services.AddSingleton<IMatchSource, OneFootballSource>();
+builder.Services.AddSingleton<IMatchSource, MundoDeportivoSource>();
+builder.Services.AddSingleton<IMatchSource, GuardianSource>();
 // Rests a source that has started refusing the scraper; shown on the admin status card.
 builder.Services.AddSingleton<SourceGuard>();
 // Each competition's own copy of the sources (La Liga's are the ones registered above), and the

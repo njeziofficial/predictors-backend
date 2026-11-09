@@ -16,6 +16,9 @@ internal static class TeamNameNormalizer
         ["atl madrid"] = "atletico-madrid",
         ["atletico madrid"] = "atletico-madrid",
         ["atletico de madrid"] = "atletico-madrid",
+        ["atletico"] = "atletico-madrid", // AS, Marca and The Guardian
+        ["r sociedad"] = "real-sociedad", // AS and Marca write "R. Sociedad"
+        ["a bilbao"] = "athletic-bilbao", // The Guardian
         ["ath bilbao"] = "athletic-bilbao",
         ["athletic club"] = "athletic-bilbao",
         ["athletic bilbao"] = "athletic-bilbao",

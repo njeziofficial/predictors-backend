@@ -17,6 +17,7 @@ public class TeamNameNormalizerTests
         { "Athletic Bilbao", "athletic-bilbao" }, { "Athletic", "athletic-bilbao" },
         { "Atl. Madrid", "atletico-madrid" }, { "Atl Madrid", "atletico-madrid" },
         { "Atlético Madrid", "atletico-madrid" }, { "Atletico de Madrid", "atletico-madrid" },
+        { "Atlético", "atletico-madrid" }, { "R. Sociedad", "real-sociedad" }, { "A Bilbao", "athletic-bilbao" },
         { "Barcelona", "barcelona" }, { "FC Barcelona", "barcelona" },
         { "Betis", "real-betis" }, { "Real Betis", "real-betis" },
         { "CA Osasuna", "osasuna" }, { "Osasuna", "osasuna" },
